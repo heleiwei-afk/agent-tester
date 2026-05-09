@@ -1,36 +1,134 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 🤖 AgentTester — 智能体自动化测试平台
 
-## Getting Started
+> 5 分钟生成 50 条测试用例、自动执行、出专业报告。智能体届的"自动化 QA 工程师"。
 
-First, run the development server:
+## ✨ 核心能力
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+- **多平台支持**：阿里百炼 / Coze 国内版 / Coze 国际版，一套系统测所有平台
+- **5 维度测试**：预期效果 · 行业规范 · 边界兜底 · Bad Case · 安全性
+- **用户体验导向**：模拟真实用户行为生成用例，不是冷冰冰的技术测试
+- **LLM-as-Judge**：三层评估（规则→模式→LLM）+ 全量双判 + 深度幻觉检测
+- **增量报告**：每完成一条用例实时追加结果，全部完成后生成总结和改进建议
+- **专业报告**：PDF 雷达图 + Markdown + JSON，含具体 Prompt 修改建议
+- **批量测试**：支持同时测试多个智能体，批量导出报告（ZIP）
+
+## 🏗 架构
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      前端 Web UI (Next.js 15)                │
+│  新建任务 │ 任务列表 │ 执行监控 │ 报告详情 │ 智能体列表      │
+└─────────────────────────────────────────────────────────────┘
+                              ↕ REST + SSE
+┌─────────────────────────────────────────────────────────────┐
+│                    API 层 (Next.js API Routes)               │
+└─────────────────────────────────────────────────────────────┘
+                              ↕
+┌────────────────┬──────────────┬──────────────┬──────────────┐
+│  用例生成引擎   │  调度编排器   │  执行器(×10) │  评估器       │
+│  (LLM 驱动)    │  (BullMQ)    │  (Worker)    │  (LLM双判)   │
+└────────────────┴──────────────┴──────────────┴──────────────┘
+                              ↕
+┌─────────────────────────────────────────────────────────────┐
+│              平台适配层 (Adapter Pattern)                     │
+│  阿里百炼 │ Coze 国内 │ Coze 国际 │ 预留扩展槽              │
+└─────────────────────────────────────────────────────────────┘
+                              ↕
+┌─────────────────────────────────────────────────────────────┐
+│          存储层：SQLite + Redis (队列) + 本地文件系统         │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## 🚀 快速开始
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+# 克隆项目
+git clone https://github.com/heleiwei-afk/agent-tester.git
+cd agent-tester
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+# 安装依赖
+pnpm install
 
-## Learn More
+# 配置环境变量
+cp .env.example .env.local
+# 编辑 .env.local，填写你的 LLM API Key 和平台凭证
 
-To learn more about Next.js, take a look at the following resources:
+# 启动 Redis（二选一）
+brew install redis && brew services start redis  # macOS
+# 或
+docker compose up redis -d                       # Docker
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+# 启动服务
+pnpm dev      # 启动 Web UI（默认 http://localhost:3000）
+pnpm workers  # 另一个终端，启动后台 Worker
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+打开浏览器访问 http://localhost:3000，填写智能体信息即可开始测试。
 
-## Deploy on Vercel
+## 🎯 使用流程
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```
+1. 新建任务 → 填写平台/API Key/App ID/预期行为描述
+2. 系统自动生成测试用例（5 维度，模拟真实用户）
+3. 审核确认用例 → 开始执行
+4. 实时查看执行进度和结果
+5. 查看测试报告 + 改进报告（含具体 Prompt 修改建议）
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## 🛠 技术栈
+
+| 层 | 技术 |
+|---|---|
+| 前端 | Next.js 15 + React 19 + TypeScript + TailwindCSS 4 + shadcn/ui |
+| 后端 | Next.js API Routes + BullMQ + Redis 7 |
+| 数据库 | SQLite + Drizzle ORM |
+| LLM | OpenAI SDK（兼容 DeepSeek / Claude / 本地模型） |
+| PDF | Puppeteer |
+| 部署 | Docker Compose |
+
+## 📋 功能清单
+
+- [x] 新建测试任务（配置平台/凭证/预期行为/行业）
+- [x] 5 维度用例自动生成（含自审过滤 + 去重）
+- [x] 用例审核确认（用户可编辑/删除）
+- [x] 并发执行（最高 10 并发）
+- [x] SSE 实时进度推送
+- [x] 三层评估 + 全量双判 + 深度幻觉检测
+- [x] 增量报告（执行过程中实时可见）
+- [x] 测试报告（Markdown / PDF 雷达图 / JSON）
+- [x] 改进报告（两级结构：概要 + 具体 Prompt 修改建议）
+- [x] 智能体列表（评分/通过率/报告链接）
+- [x] 批量导出（ZIP 打包多个报告）
+- [x] 暂停 / 取消 / 单条重试
+- [x] 限流自愈（自动降速 + 恢复）
+- [x] 任务/队列联动删除
+
+## 🔧 配置说明
+
+### LLM 模型配置
+
+系统支持分离"生成模型"和"评估模型"：
+
+```env
+# 用例生成（推荐用快速模型）
+LLM_GENERATION_MODEL=claude-sonnet-4-6
+
+# 评估判分（推荐用高精度模型）
+LLM_EVALUATION_MODEL=claude-opus-4-6
+```
+
+### 平台适配
+
+| 平台 | 配置 |
+|---|---|
+| 阿里百炼 | `BAILIAN_API_KEY` + App ID |
+| Coze 国内 | API Key + Bot ID |
+| Coze 国际 | API Key + Bot ID |
+
+## 🤝 贡献
+
+欢迎提交 Issue 和 PR。
+
+## 📄 License
+
+MIT
