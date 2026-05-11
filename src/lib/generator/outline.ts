@@ -7,6 +7,7 @@ import { db, schema } from '../db';
 import { eq } from 'drizzle-orm';
 import type { TaskConfig, TestOutline, TestGoal, TestScenario, TestPoint, TestCase, Dimension } from '../types';
 import { OUTLINE_GENERATION_PROMPT } from './prompts';
+import { callLLMForJSON } from '../llm';
 import { createTaskLogger } from '../logger';
 
 const logger = createTaskLogger('outline-generator');
@@ -24,48 +25,16 @@ async function callLLMForOutline(
     .replace('{systemPrompt}', systemPrompt || '（未提供）')
     .replace('{industry}', industry);
 
-  const apiKey = process.env.LLM_API_KEY || '';
-  const baseUrl = process.env.LLM_BASE_URL || 'https://api.deepseek.com';
   const model = process.env.LLM_GENERATION_MODEL || process.env.LLM_MODEL || 'claude-sonnet-4-6';
 
-  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        {
-          role: 'system',
-          content: '你是专业的智能体测试架构师。严格按照要求的 JSON 格式输出。确保输出完整的 JSON，不要截断。',
-        },
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-      temperature: 0.7,
-      max_tokens: 16384,
-    }),
+  const outline = await callLLMForJSON<TestOutline>({
+    systemPrompt: '你是专业的智能体测试架构师。严格按照要求的 JSON 格式输出。确保输出完整的 JSON，不要截断。',
+    userPrompt: prompt,
+    temperature: 0.7,
+    maxTokens: 16384,
+    model,
   });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`LLM API 调用失败: ${response.status} ${errorText}`);
-  }
-
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || '';
-
-  // 提取 JSON（可能被 markdown 代码块包裹）
-  const jsonMatch = content.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/) || content.match(/(\{[\s\S]*\})/);
-  if (!jsonMatch) {
-    throw new Error('LLM 返回内容不包含有效 JSON');
-  }
-
-  const outline = JSON.parse(jsonMatch[1]);
   return outline;
 }
 
@@ -349,47 +318,16 @@ async function generateCasesForPoint(
   ]
 }`;
 
-  const apiKey = process.env.LLM_API_KEY || '';
-  const baseUrl = process.env.LLM_BASE_URL || 'https://api.deepseek.com';
   const model = process.env.LLM_GENERATION_MODEL || process.env.LLM_MODEL || 'claude-sonnet-4-6';
 
-  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        {
-          role: 'system',
-          content: '你是专业的测试用例生成器。严格按照要求的 JSON 格式输出。',
-        },
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-      temperature: 0.8,
-      max_tokens: 8192,
-    }),
+  const result = await callLLMForJSON<{ cases: any[] }>({
+    systemPrompt: '你是专业的测试用例生成器。严格按照要求的 JSON 格式输出。',
+    userPrompt: prompt,
+    temperature: 0.8,
+    maxTokens: 8192,
+    model,
   });
 
-  if (!response.ok) {
-    throw new Error(`LLM API 调用失败: ${response.status}`);
-  }
-
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || '';
-
-  // 提取 JSON
-  const jsonMatch = content.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/) || content.match(/(\{[\s\S]*\})/);
-  if (!jsonMatch) {
-    throw new Error('LLM 返回内容不包含有效 JSON');
-  }
-
-  const result = JSON.parse(jsonMatch[1]);
   const generatedCases = result.cases || [];
 
   // 转换为 TestCase 格式
