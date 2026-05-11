@@ -19,6 +19,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { PaginationControl } from '@/components/ui/pagination-control';
 
 interface CaseDetail {
   id: string;
@@ -29,6 +30,7 @@ interface CaseDetail {
   passCriteria: string[];
   weight: number;
   status: string;
+  newSession: boolean;
   verdict: {
     pass: boolean;
     score: number;
@@ -57,6 +59,13 @@ interface Stats {
   verdictFailed: number;
 }
 
+interface Pagination {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+}
+
 export default function CasesPage() {
   const params = useParams();
   const taskId = params.id as string;
@@ -67,27 +76,42 @@ export default function CasesPage() {
   const [dimensionFilter, setDimensionFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
   const [selectedCase, setSelectedCase] = useState<CaseDetail | null>(null);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState<Pagination | null>(null);
 
   useEffect(() => {
     fetchCases();
     const interval = setInterval(fetchCases, 3000);
     return () => clearInterval(interval);
-  }, [taskId, dimensionFilter, statusFilter]);
+  }, [taskId, dimensionFilter, statusFilter, page]);
 
   async function fetchCases() {
     try {
       const params = new URLSearchParams();
       if (dimensionFilter !== 'all') params.set('dimension', dimensionFilter);
       if (statusFilter !== 'all') params.set('status', statusFilter);
+      params.set('page', String(page));
+      params.set('pageSize', '30');
       const res = await fetch(`/api/tasks/${taskId}/cases?${params}`);
       const data = await res.json();
       setCases(data.cases || []);
       setStats(data.stats || null);
+      setPagination(data.pagination || null);
     } catch (err) {
       console.error('获取用例失败', err);
     } finally {
       setLoading(false);
     }
+  }
+
+  function handleDimensionChange(v: string) {
+    setDimensionFilter(v);
+    setPage(1);
+  }
+
+  function handleStatusChange(v: string) {
+    setStatusFilter(v);
+    setPage(1);
   }
 
   const progressPct = stats ? Math.round(((stats.done + stats.failed) / Math.max(stats.total, 1)) * 100) : 0;
@@ -126,7 +150,7 @@ export default function CasesPage() {
 
       {/* 筛选器 */}
       <div className="flex gap-3 mb-4">
-        <Select value={dimensionFilter} onValueChange={(v) => v && setDimensionFilter(v)}>
+        <Select value={dimensionFilter} onValueChange={(v) => v && handleDimensionChange(v)}>
           <SelectTrigger className="w-36">
             <SelectValue placeholder="全部维度" />
           </SelectTrigger>
@@ -139,7 +163,7 @@ export default function CasesPage() {
             <SelectItem value="security">安全性</SelectItem>
           </SelectContent>
         </Select>
-        <Select value={statusFilter} onValueChange={(v) => v && setStatusFilter(v)}>
+        <Select value={statusFilter} onValueChange={(v) => v && handleStatusChange(v)}>
           <SelectTrigger className="w-32">
             <SelectValue placeholder="全部状态" />
           </SelectTrigger>
@@ -175,6 +199,11 @@ export default function CasesPage() {
                         <Badge variant="outline" className="text-xs">
                           {getDimensionName(c.dimension)}
                         </Badge>
+                        {c.newSession && (
+                          <Badge variant="outline" className="text-xs bg-purple-50 text-purple-600 border-purple-200">
+                            新会话
+                          </Badge>
+                        )}
                         <span className="text-sm font-medium">{c.subType}</span>
                       </div>
                       <p className="text-xs text-gray-500 mt-0.5 truncate max-w-md">
@@ -201,6 +230,16 @@ export default function CasesPage() {
           ))
         )}
       </div>
+
+      {/* 分页 */}
+      {pagination && (
+        <PaginationControl
+          page={pagination.page}
+          totalPages={pagination.totalPages}
+          total={pagination.total}
+          onPageChange={setPage}
+        />
+      )}
 
       {/* 用例详情弹窗 */}
       <Dialog open={!!selectedCase} onOpenChange={() => setSelectedCase(null)}>

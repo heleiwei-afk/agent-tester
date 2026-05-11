@@ -88,6 +88,46 @@ export class CozeCnAdapter implements AgentAdapter {
   }
 
   /**
+   * 获取智能体的 system prompt / 角色定位描述
+   * Coze 的 /v3/bots/retrieve 可能返回 prompt_info 或 system_prompt 字段
+   */
+  async getSystemPrompt(): Promise<string | null> {
+    try {
+      const response = await fetch(`${this.baseUrl}/v3/bots/retrieve?bot_id=${this.botId}`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const botData = data.data;
+        // 尝试多种可能的字段名
+        const prompt = botData?.prompt_info?.prompt
+          || botData?.system_prompt
+          || botData?.persona
+          || botData?.prompt
+          || botData?.onboarding_info?.prologue
+          || null;
+        if (prompt) return prompt;
+      }
+
+      // 如果 API 没有返回 prompt，使用诱导式提问
+      const tempConvId = await this.createConversation();
+      const invokeResponse = await this.invoke({
+        conversationId: tempConvId,
+        userMessage: '请详细描述你的角色定位、核心能力、工作方式、使用场景和限制条件。用一段完整的话说明。',
+      });
+      await this.closeConversation(tempConvId);
+      return invokeResponse.content || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * 创建会话
    */
   async createConversation(): Promise<string> {

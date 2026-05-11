@@ -8,7 +8,7 @@ export const tasks = sqliteTable('tasks', {
   platform: text('platform').notNull(),     // bailian / coze_cn / coze_global
   configJson: text('config_json').notNull(),// 完整配置 JSON
   status: text('status').notNull().default('pending'),
-  // pending → generating → reviewing → running → done / cancelled / failed
+  // pending → analyzing → outline_review → generating → reviewing → running → done / cancelled / failed
   overallScore: integer('overall_score'),   // 综合评分 0-100
   totalCases: integer('total_cases'),       // 用例总数
   passedCases: integer('passed_cases'),     // 通过数
@@ -38,6 +38,10 @@ export const cases = sqliteTable('cases', {
   evidenceHints: text('evidence_hints'),   // 提示 Judge 关注的关键点 JSON
   status: text('status').notNull().default('pending'),
   // pending / running / done / failed / timeout
+  newSession: integer('new_session').notNull().default(0), // 1 = 此用例开始新会话
+  goalId: text('goal_id'),         // 大纲追溯：测试目标 ID
+  scenarioId: text('scenario_id'), // 大纲追溯：测试场景 ID
+  pointId: text('point_id'),       // 大纲追溯：测试点 ID
   orderIndex: integer('order_index').notNull().default(0),
   createdAt: integer('created_at').notNull(),
 });
@@ -75,4 +79,49 @@ export const verdicts = sqliteTable('verdicts', {
   perTurnScoresJson: text('per_turn_scores_json'), // 多轮每轮得分 JSON
   needsHumanReview: integer('needs_human_review').default(0),
   createdAt: integer('created_at').notNull(),
+});
+
+// 测试模板表（维度 Prompt、行业规则、Good/Bad Case）
+export const testTemplates = sqliteTable('test_templates', {
+  id: text('id').primaryKey(),
+  type: text('type').notNull(),             // dimension / industry_rule / good_case / bad_case
+  dimension: text('dimension'),             // 关联维度 key
+  industry: text('industry'),              // 关联行业（仅 industry_rule）
+  name: text('name').notNull(),            // 显示名称
+  content: text('content').notNull(),      // Prompt 文本 / 规则文本 / 用例 JSON
+  description: text('description'),        // 描述说明
+  isActive: integer('is_active').notNull().default(1),  // 是否启用
+  sortOrder: integer('sort_order').notNull().default(0),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});
+
+// 用例生成进度表
+export const generationProgress = sqliteTable('generation_progress', {
+  id: text('id').primaryKey(),
+  taskId: text('task_id').notNull().references(() => tasks.id),
+  dimension: text('dimension').notNull(),
+  status: text('status').notNull().default('pending'),
+  // pending / generating / done / failed
+  targetCount: integer('target_count').notNull(),
+  generatedCount: integer('generated_count').default(0),
+  afterDedupCount: integer('after_dedup_count').default(0),
+  afterReviewCount: integer('after_review_count').default(0),
+  batchTotal: integer('batch_total').default(0),
+  batchSuccess: integer('batch_success').default(0),
+  batchFailed: integer('batch_failed').default(0),
+  errorMessages: text('error_messages'),  // JSON 数组
+  startedAt: integer('started_at'),
+  finishedAt: integer('finished_at'),
+});
+
+// 测试大纲表
+export const testOutlines = sqliteTable('test_outlines', {
+  id: text('id').primaryKey(),
+  taskId: text('task_id').notNull(),
+  outlineJson: text('outline_json').notNull(),  // 完整的 TestOutline JSON
+  systemPromptUsed: text('system_prompt_used'), // 生成大纲时使用的 system prompt
+  status: text('status').notNull().default('draft'), // draft / approved
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
 });

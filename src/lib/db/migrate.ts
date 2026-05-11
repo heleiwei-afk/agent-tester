@@ -42,6 +42,7 @@ export function initDatabase() {
       checkpoints TEXT,
       evidence_hints TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
+      new_session INTEGER NOT NULL DEFAULT 0,
       order_index INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL
     );
@@ -86,5 +87,78 @@ export function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_verdicts_task_id ON verdicts(task_id);
     CREATE INDEX IF NOT EXISTS idx_tasks_bot_id ON tasks(bot_id);
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+
+    CREATE TABLE IF NOT EXISTS generation_progress (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES tasks(id),
+      dimension TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      target_count INTEGER NOT NULL,
+      generated_count INTEGER DEFAULT 0,
+      after_dedup_count INTEGER DEFAULT 0,
+      after_review_count INTEGER DEFAULT 0,
+      batch_total INTEGER DEFAULT 0,
+      batch_success INTEGER DEFAULT 0,
+      batch_failed INTEGER DEFAULT 0,
+      error_messages TEXT,
+      started_at INTEGER,
+      finished_at INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_gen_progress_task_id ON generation_progress(task_id);
+
+    CREATE TABLE IF NOT EXISTS test_templates (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      dimension TEXT,
+      industry TEXT,
+      name TEXT NOT NULL,
+      content TEXT NOT NULL,
+      description TEXT,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_templates_type ON test_templates(type);
+    CREATE INDEX IF NOT EXISTS idx_templates_dimension ON test_templates(dimension);
+
+    CREATE TABLE IF NOT EXISTS test_outlines (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      outline_json TEXT NOT NULL,
+      system_prompt_used TEXT,
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_outlines_task_id ON test_outlines(task_id);
   `);
+
+  // 增量迁移：新增 new_session 字段（兼容已有数据库）
+  try {
+    sqlite.exec(`ALTER TABLE cases ADD COLUMN new_session INTEGER NOT NULL DEFAULT 0`);
+  } catch (e: any) {
+    // 字段已存在则忽略
+    if (!e.message?.includes('duplicate column')) throw e;
+  }
+
+  // 增量迁移：cases 表新增大纲追溯字段
+  try {
+    sqlite.exec(`ALTER TABLE cases ADD COLUMN goal_id TEXT`);
+  } catch (e: any) {
+    if (!e.message?.includes('duplicate column')) throw e;
+  }
+  try {
+    sqlite.exec(`ALTER TABLE cases ADD COLUMN scenario_id TEXT`);
+  } catch (e: any) {
+    if (!e.message?.includes('duplicate column')) throw e;
+  }
+  try {
+    sqlite.exec(`ALTER TABLE cases ADD COLUMN point_id TEXT`);
+  } catch (e: any) {
+    if (!e.message?.includes('duplicate column')) throw e;
+  }
 }

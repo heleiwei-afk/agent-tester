@@ -13,6 +13,11 @@ export interface AgentAdapter {
   /** 获取智能体名称 */
   getAgentName(): Promise<string>;
 
+  /** 获取智能体的 system prompt / 角色定位描述
+   * @returns system prompt 文本，如果平台不支持或获取失败则返回 null
+   */
+  getSystemPrompt(): Promise<string | null>;
+
   /** 创建一个对话会话，返回 sessionId/conversationId */
   createConversation(): Promise<string>;
 

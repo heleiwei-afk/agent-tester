@@ -112,6 +112,28 @@ export class BailianAdapter implements AgentAdapter {
   }
 
   /**
+   * 获取智能体的 system prompt / 角色定位描述
+   * 百炼 API 不提供直接获取 system prompt 的端点，使用诱导式提问
+   */
+  async getSystemPrompt(): Promise<string | null> {
+    try {
+      const tempSessionId = uuid();
+      const response = await this.invoke({
+        conversationId: tempSessionId,
+        userMessage: '请详细描述你的角色定位、核心能力、工作方式、使用场景和限制条件。用一段完整的话说明。',
+      });
+
+      // 清理临时会话
+      await this.closeConversation(tempSessionId);
+
+      return response.content || null;
+    } catch (error) {
+      logger.warn({ error: (error as Error).message }, '自动获取智能体角色描述失败');
+      return null;
+    }
+  }
+
+  /**
    * 创建会话（百炼通过 session_id 维持多轮）
    */
   async createConversation(): Promise<string> {

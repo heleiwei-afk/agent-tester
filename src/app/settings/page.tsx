@@ -54,6 +54,13 @@ export default function SettingsPage() {
           <p className="text-xs text-gray-400 text-center">
             设置保存在浏览器本地，不会上传到服务器
           </p>
+
+          {/* 模板管理入口 */}
+          <div className="border-t pt-4 mt-4">
+            <a href="/templates" className="block w-full py-2 text-center text-sm text-blue-600 hover:text-blue-800 border border-blue-200 rounded-lg hover:bg-blue-50 transition-colors">
+              管理测试维度、Prompt 模板、行业规则 →
+            </a>
+          </div>
         </CardContent>
       </Card>
     </div>

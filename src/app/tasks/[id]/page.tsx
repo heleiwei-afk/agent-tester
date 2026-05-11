@@ -146,9 +146,11 @@ export default function TaskMonitorPage() {
   const { task, caseStats, verdictStats } = data;
   const totalDone = caseStats.done + caseStats.failed;
   const progressPct = caseStats.total > 0 ? Math.round((totalDone / caseStats.total) * 100) : 0;
-  const isRunning = task.status === 'running' || task.status === 'generating';
+  const isRunning = task.status === 'running' || task.status === 'generating' || task.status === 'completing';
   const isDone = task.status === 'done';
   const isReviewing = task.status === 'reviewing';
+  const isAnalyzing = task.status === 'analyzing';
+  const isOutlineReview = task.status === 'outline_review';
 
   // 预估剩余时间
   const elapsed = task.startedAt ? (Date.now() - task.startedAt) / 1000 : 0;
@@ -210,12 +212,29 @@ export default function TaskMonitorPage() {
 
           {/* 操作按钮 */}
           <div className="flex gap-3">
+            {isAnalyzing && (
+              <div className="flex items-center gap-2 text-sm text-blue-600">
+                <span className="animate-pulse">●</span>
+                正在分析智能体，生成测试大纲...
+              </div>
+            )}
+            {isOutlineReview && (
+              <Link href={`/tasks/${taskId}/outline`}>
+                <Button>审核测试大纲</Button>
+              </Link>
+            )}
             {isReviewing && (
               <Button onClick={handleStartExecution}>
                 确认用例，开始执行
               </Button>
             )}
-            {isRunning && (
+            {task.status === 'completing' && (
+              <div className="flex items-center gap-2 text-sm text-blue-600">
+                <span className="animate-pulse">●</span>
+                所有用例执行完毕，正在生成测试报告...
+              </div>
+            )}
+            {task.status === 'running' && (
               <>
                 <Button variant="outline" onClick={handlePause}>
                   暂停
@@ -248,13 +267,18 @@ export default function TaskMonitorPage() {
       </Card>
 
       {/* 生成中提示 */}
-      {task.status === 'generating' && (
+      {(task.status === 'generating' || task.status === 'reviewing') && (
+        <GenerationProgressPanel taskId={taskId} taskStatus={task.status} />
+      )}
+
+      {/* 大纲审核提示 */}
+      {isOutlineReview && (
         <Card>
-          <CardContent className="py-8 text-center">
-            <div className="animate-pulse text-lg mb-2">正在生成测试用例...</div>
-            <p className="text-sm text-gray-500">
-              系统正在分析智能体描述，生成多维度测试用例。预计 1-2 分钟。
-            </p>
+          <CardContent className="py-6 text-center">
+            <p className="text-gray-600 mb-2">测试大纲已生成，请审核后确认生成用例</p>
+            <Link href={`/tasks/${taskId}/outline`}>
+              <Button>前往审核大纲</Button>
+            </Link>
           </CardContent>
         </Card>
       )}
@@ -262,7 +286,182 @@ export default function TaskMonitorPage() {
   );
 }
 
-function StatCard({ label, value, color }: { label: string; value: number; color?: string }) {
+// ============================================================
+// 用例生成进度面板
+// ============================================================
+
+interface DimProgress {
+  dimension: string;
+  dimensionName: string;
+  status: string;
+  targetCount: number;
+  generatedCount: number;
+  afterDedupCount: number;
+  afterReviewCount: number;
+  batchTotal: number;
+  batchSuccess: number;
+  batchFailed: number;
+  errorMessages: string[];
+}
+
+interface GenSummary {
+  totalTarget: number;
+  totalGenerated: number;
+  totalAfterDedup: number;
+  totalAfterReview: number;
+  dimensionsDone: number;
+  dimensionsFailed: number;
+  dimensionsTotal: number;
+}
+
+function GenerationProgressPanel({ taskId, taskStatus }: { taskId: string; taskStatus: string }) {
+  const [progress, setProgress] = useState<DimProgress[]>([]);
+  const [summary, setSummary] = useState<GenSummary | null>(null);
+  const [regenerating, setRegenerating] = useState(false);
+
+  useEffect(() => {
+    fetchProgress();
+    const interval = setInterval(fetchProgress, 2000);
+    return () => clearInterval(interval);
+  }, [taskId]);
+
+  async function fetchProgress() {
+    try {
+      const res = await fetch(`/api/tasks/${taskId}/generation-progress`);
+      if (res.ok) {
+        const data = await res.json();
+        setProgress(data.progress || []);
+        setSummary(data.summary || null);
+      }
+    } catch {}
+  }
+
+  async function handleRegenerate(dimensions: string[]) {
+    setRegenerating(true);
+    try {
+      await fetch(`/api/tasks/${taskId}/regenerate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dimensions }),
+      });
+      fetchProgress();
+    } catch {}
+    finally { setRegenerating(false); }
+  }
+
+  if (progress.length === 0) {
+    return (
+      <Card>
+        <CardContent className="py-8 text-center">
+          <div className="animate-pulse text-lg mb-2">正在准备生成测试用例...</div>
+          <p className="text-sm text-gray-500">系统正在分析智能体描述，提取核心能力和用户画像</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const failedDimensions = progress.filter(p => p.status === 'failed').map(p => p.dimension);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">用例生成进度</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {progress.map(dim => (
+          <div key={dim.dimension} className="space-y-1">
+            <div className="flex items-center gap-3">
+              {/* 状态图标 */}
+              <span className="w-5 text-center">
+                {dim.status === 'done' && <span className="text-green-500">✓</span>}
+                {dim.status === 'failed' && <span className="text-red-500">✗</span>}
+                {dim.status === 'generating' && <span className="text-blue-500 animate-pulse">●</span>}
+                {dim.status === 'pending' && <span className="text-gray-300">○</span>}
+              </span>
+
+              {/* 维度名称 */}
+              <span className="w-20 text-sm font-medium">{dim.dimensionName}</span>
+
+              {/* 进度条 */}
+              <div className="flex-1">
+                <Progress
+                  value={dim.targetCount > 0 ? ((dim.afterReviewCount || dim.generatedCount) / dim.targetCount) * 100 : 0}
+                  className="h-2"
+                />
+              </div>
+
+              {/* 数量 */}
+              <span className="text-sm font-mono w-16 text-right text-gray-600">
+                {dim.afterReviewCount || dim.generatedCount}/{dim.targetCount}
+              </span>
+
+              {/* 批次信息 */}
+              <span className="text-xs text-gray-400 w-20 text-right">
+                {dim.batchSuccess > 0 && <span className="text-green-600">{dim.batchSuccess}批成功</span>}
+                {dim.batchFailed > 0 && <span className="text-red-500 ml-1">{dim.batchFailed}批失败</span>}
+              </span>
+            </div>
+
+            {/* 失败原因 + 重试按钮 */}
+            {dim.status === 'failed' && (
+              <div className="ml-8 flex items-center gap-2">
+                <p className="text-xs text-red-500 flex-1 truncate">
+                  {dim.errorMessages[0] || '生成失败'}
+                </p>
+                {taskStatus === 'generating' && (
+                  <button
+                    className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 disabled:opacity-50"
+                    onClick={() => handleRegenerate([dim.dimension])}
+                    disabled={regenerating}
+                  >
+                    重新生成
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+
+        {/* 底部汇总 */}
+        {summary && (
+          <div className="border-t pt-3 mt-3">
+            <div className="flex items-center justify-between text-sm text-gray-500">
+              <span>
+                总计: {summary.totalAfterReview || summary.totalGenerated}/{summary.totalTarget}
+                {summary.totalGenerated > summary.totalAfterDedup && summary.totalAfterDedup > 0 && (
+                  <span className="text-xs ml-2">
+                    (去重 -{summary.totalGenerated - summary.totalAfterDedup}
+                    {summary.totalAfterDedup > summary.totalAfterReview && summary.totalAfterReview > 0 && (
+                      <>, 自审 -{summary.totalAfterDedup - summary.totalAfterReview}</>
+                    )}
+                    )
+                  </span>
+                )}
+              </span>
+              <span>
+                {summary.dimensionsDone}/{summary.dimensionsTotal} 维度完成
+                {summary.dimensionsFailed > 0 && (
+                  <span className="text-red-500 ml-1">({summary.dimensionsFailed} 失败)</span>
+                )}
+              </span>
+            </div>
+
+            {/* 重新生成所有失败维度 */}
+            {failedDimensions.length > 0 && taskStatus === 'generating' && (
+              <button
+                className="mt-2 w-full py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+                onClick={() => handleRegenerate(failedDimensions)}
+                disabled={regenerating}
+              >
+                {regenerating ? '正在重新生成...' : `重新生成所有失败维度 (${failedDimensions.length} 个)`}
+              </button>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}function StatCard({ label, value, color }: { label: string; value: number; color?: string }) {
   const colorClass = {
     blue: 'text-blue-600',
     green: 'text-green-600',
@@ -280,9 +479,12 @@ function StatCard({ label, value, color }: { label: string; value: number; color
 function StatusBadge({ status }: { status: string }) {
   const config: Record<string, { label: string; color: string }> = {
     pending: { label: '等待中', color: 'bg-gray-100 text-gray-700' },
+    analyzing: { label: '分析中', color: 'bg-purple-100 text-purple-700' },
+    outline_review: { label: '大纲审核', color: 'bg-yellow-100 text-yellow-700' },
     generating: { label: '生成用例中', color: 'bg-blue-100 text-blue-700' },
     reviewing: { label: '待审核', color: 'bg-yellow-100 text-yellow-700' },
     running: { label: '执行中', color: 'bg-blue-100 text-blue-700' },
+    completing: { label: '生成报告中', color: 'bg-indigo-100 text-indigo-700' },
     done: { label: '已完成', color: 'bg-green-100 text-green-700' },
     cancelled: { label: '已取消', color: 'bg-gray-100 text-gray-700' },
     failed: { label: '失败', color: 'bg-red-100 text-red-700' },

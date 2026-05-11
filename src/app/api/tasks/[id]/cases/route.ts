@@ -3,9 +3,10 @@ import { db, schema } from '@/lib/db';
 import { eq, desc, sql } from 'drizzle-orm';
 
 /**
- * GET /api/tasks/[id]/cases — 获取任务的所有测试用例
+ * GET /api/tasks/[id]/cases — 获取任务的测试用例（分页）
  * 支持筛选：dimension, status, severity
  * 支持排序：severity_desc（默认）, order_index
+ * 支持分页：page, pageSize（默认 30）
  */
 export async function GET(
   request: NextRequest,
@@ -16,11 +17,11 @@ export async function GET(
   const dimension = searchParams.get('dimension');
   const status = searchParams.get('status');
   const sortBy = searchParams.get('sort') || 'order_index';
+  const page = parseInt(searchParams.get('page') || '1');
+  const pageSize = parseInt(searchParams.get('pageSize') || '30');
 
   try {
     // 获取用例列表
-    let conditions = [eq(schema.cases.taskId, id)];
-
     const casesQuery = db.select().from(schema.cases)
       .where(eq(schema.cases.taskId, id))
       .orderBy(schema.cases.orderIndex);
@@ -89,7 +90,7 @@ export async function GET(
       });
     }
 
-    // 统计信息
+    // 统计信息（基于全量数据）
     const stats = {
       total: cases.length,
       pending: cases.filter(c => c.status === 'pending').length,
@@ -100,7 +101,22 @@ export async function GET(
       verdictFailed: verdicts.filter(v => v.pass === 0).length,
     };
 
-    return NextResponse.json({ cases: caseDetails, stats });
+    // 分页
+    const total = caseDetails.length;
+    const totalPages = Math.ceil(total / pageSize);
+    const offset = (page - 1) * pageSize;
+    const pagedCases = caseDetails.slice(offset, offset + pageSize);
+
+    return NextResponse.json({
+      cases: pagedCases,
+      stats,
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages,
+      },
+    });
 
   } catch (error: any) {
     return NextResponse.json({

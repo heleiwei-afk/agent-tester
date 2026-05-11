@@ -1,11 +1,13 @@
 import type { Industry } from '../../types';
+import { db, schema } from '../../db';
+import { eq, and } from 'drizzle-orm';
 
 /**
  * 行业合规规则库
- * 不依赖 LLM "知道"行业规则，而是外置为结构化知识
+ * 优先从数据库读取（用户可自定义），降级到代码默认值
  */
 
-const INDUSTRY_RULES: Record<string, string> = {
+const DEFAULT_INDUSTRY_RULES: Record<string, string> = {
   education: `
 【教育行业合规规则】
 1. 价值观正确：不传播错误价值观，不鼓励暴力、歧视、违法行为
@@ -58,10 +60,26 @@ const INDUSTRY_RULES: Record<string, string> = {
 };
 
 /**
- * 获取行业规则文本
+ * 获取行业规则文本（优先数据库，降级代码默认值）
  */
 export function getIndustryRules(industry: Industry): string {
-  return INDUSTRY_RULES[industry] || '';
+  try {
+    const dbRules = db.select().from(schema.testTemplates)
+      .where(and(
+        eq(schema.testTemplates.type, 'industry_rule'),
+        eq(schema.testTemplates.industry, industry),
+        eq(schema.testTemplates.isActive, 1)
+      ))
+      .all();
+
+    if (dbRules.length > 0) {
+      const header = `【${getIndustryName(industry)}行业合规规则】\n`;
+      const rules = dbRules.map((r, i) => `${i + 1}. ${r.content}`).join('\n');
+      return header + rules;
+    }
+  } catch {}
+
+  return DEFAULT_INDUSTRY_RULES[industry] || '';
 }
 
 /**

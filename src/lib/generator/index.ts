@@ -13,6 +13,8 @@ import {
 import { getIndustryRules } from './industry-rules';
 import type { TaskConfig, TestCase, Dimension, SelfReviewResult } from '../types';
 import { createTaskLogger } from '../logger';
+import { db, schema } from '../db';
+import { eq, and } from 'drizzle-orm';
 
 const logger = createTaskLogger('generator');
 
@@ -60,7 +62,7 @@ interface UserProfileResult {
 /**
  * 用例生成引擎主入口
  * 
- * 流程：能力提取 → 用户画像推断 → 分维度生成 → 自审过滤
+ * 流程：能力提取 → 用户画像推断 → 分维度生成（写入进度） → 去重 → 自审过滤
  */
 export async function generateTestCases(
   taskId: string,
@@ -81,6 +83,53 @@ export async function generateTestCases(
   const allCases: TestCase[] = [];
   const caseCountPerDimension = distributeCaseCount(config.caseCount, dimensions);
 
+  // 初始化 generation_progress 记录
+  for (const dim of dimensions) {
+    const existing = await db.select().from(schema.generationProgress)
+      .where(and(
+        eq(schema.generationProgress.taskId, taskId),
+        eq(schema.generationProgress.dimension, dim)
+      ));
+    if (existing.length === 0) {
+      await db.insert(schema.generationProgress).values({
+        id: uuid(),
+        taskId,
+        dimension: dim,
+        status: 'pending',
+        targetCount: caseCountPerDimension[dim] || 0,
+        generatedCount: 0,
+        afterDedupCount: 0,
+        afterReviewCount: 0,
+        batchTotal: 0,
+        batchSuccess: 0,
+        batchFailed: 0,
+        errorMessages: '[]',
+        startedAt: null,
+        finishedAt: null,
+      });
+    } else {
+      // 重新生成时重置状态
+      await db.update(schema.generationProgress)
+        .set({
+          status: 'pending',
+          targetCount: caseCountPerDimension[dim] || 0,
+          generatedCount: 0,
+          afterDedupCount: 0,
+          afterReviewCount: 0,
+          batchTotal: 0,
+          batchSuccess: 0,
+          batchFailed: 0,
+          errorMessages: '[]',
+          startedAt: null,
+          finishedAt: null,
+        })
+        .where(and(
+          eq(schema.generationProgress.taskId, taskId),
+          eq(schema.generationProgress.dimension, dim)
+        ));
+    }
+  }
+
   for (const dimension of dimensions) {
     const count = caseCountPerDimension[dimension] || 0;
     if (count === 0) continue;
@@ -96,9 +145,31 @@ export async function generateTestCases(
   const deduplicated = deduplicateCases(allCases);
   logger.info({ taskId, before: allCases.length, after: deduplicated.length }, '去重完成');
 
+  // 更新每个维度的去重后数量
+  for (const dim of dimensions) {
+    const dimCases = deduplicated.filter(c => c.dimension === dim);
+    await db.update(schema.generationProgress)
+      .set({ afterDedupCount: dimCases.length })
+      .where(and(
+        eq(schema.generationProgress.taskId, taskId),
+        eq(schema.generationProgress.dimension, dim)
+      ));
+  }
+
   // 第五步：自审
   const reviewed = await selfReviewCases(taskId, deduplicated);
   logger.info({ taskId, final: reviewed.length }, '自审完成，用例生成结束');
+
+  // 更新每个维度的自审后数量
+  for (const dim of dimensions) {
+    const dimCases = reviewed.filter(c => c.dimension === dim);
+    await db.update(schema.generationProgress)
+      .set({ afterReviewCount: dimCases.length })
+      .where(and(
+        eq(schema.generationProgress.taskId, taskId),
+        eq(schema.generationProgress.dimension, dim)
+      ));
+  }
 
   return reviewed;
 }
@@ -123,23 +194,23 @@ async function extractCapabilities(config: TaskConfig): Promise<CapabilityResult
       }
     }
   }
-  // 最终降级：基于 expectedBehavior 构造简单能力列表
+  // 最终降级：返回基础能力
   logger.warn('能力提取全部失败，使用降级方案');
   return {
     capabilities: [{
       name: '核心功能',
       description: config.expectedBehavior,
       importance: '核心',
-      interactionType: '问答',
-      examples: ['用户正常使用场景'],
+      interactionType: '对话',
+      examples: ['用户直接提问'],
     }],
-    boundaries: [{ description: '超出描述范围的请求', reason: '非核心功能' }],
+    boundaries: [{ description: '超出功能范围的请求', reason: '非设计用途' }],
     targetScenarios: ['日常使用'],
   };
 }
 
 /**
- * 推断目标用户画像（带重试+降级）
+ * 推断用户画像（带重试+降级）
  */
 async function inferUserProfile(config: TaskConfig): Promise<UserProfileResult> {
   const MAX_RETRIES = 2;
@@ -207,21 +278,22 @@ function distributeCaseCount(
   const result: Record<string, number> = {};
   let allocated = 0;
 
-  dimensions.forEach((d, i) => {
-    if (i === dimensions.length - 1) {
-      result[d] = total - allocated;
+  const entries = Object.entries(activeRatios);
+  for (let i = 0; i < entries.length; i++) {
+    const [dim, ratio] = entries[i];
+    if (i === entries.length - 1) {
+      result[dim] = total - allocated;
     } else {
-      const count = Math.round((activeRatios[d] / sum) * total);
-      result[d] = count;
-      allocated += count;
+      result[dim] = Math.round(total * (ratio / sum));
+      allocated += result[dim];
     }
-  });
+  }
 
   return result;
 }
 
 /**
- * 按维度生成用例
+ * 按维度生成用例（带进度追踪）
  */
 async function generateByDimension(
   taskId: string,
@@ -231,17 +303,25 @@ async function generateByDimension(
   capabilities: CapabilityResult,
   userProfile: UserProfileResult
 ): Promise<TestCase[]> {
-  const promptTemplate = getPromptForDimension(dimension);
-  const variables = {
+  // 标记维度开始
+  await db.update(schema.generationProgress)
+    .set({ status: 'generating', startedAt: Date.now() })
+    .where(and(
+      eq(schema.generationProgress.taskId, taskId),
+      eq(schema.generationProgress.dimension, dimension)
+    ));
+
+  const promptTemplate = await getPromptForDimension(dimension);
+  const variables: Record<string, string> = {
+    capabilities: JSON.stringify(capabilities, null, 2),
     expectedBehavior: config.expectedBehavior,
     industry: config.industry,
-    capabilities: JSON.stringify(capabilities.capabilities, null, 2),
-    boundaries: JSON.stringify(capabilities.boundaries, null, 2),
     userProfile: JSON.stringify(userProfile, null, 2),
     multiTurnRatio: String(config.multiTurnRatio),
     industryRules: dimension === 'industry'
       ? getIndustryRules(config.industry)
       : '',
+    boundaries: JSON.stringify(capabilities.boundaries || [], null, 2),
   };
 
   // 替换模板变量
@@ -250,18 +330,33 @@ async function generateByDimension(
     prompt = prompt.replace(new RegExp(`\\{${key}\\}`, 'g'), value);
   }
 
+  // 注入 few-shot 示例
+  const fewShot = await getFewShotExamples(dimension);
+  if (fewShot) {
+    prompt += fewShot;
+  }
+
   // 分批生成：每批最多 10 条，避免 JSON 过长被截断
   const BATCH_SIZE = 10;
   const MAX_BATCH_RETRIES = 2;
   const allCases: TestCase[] = [];
   let remaining = count;
   let batchIndex = 0;
+  let consecutiveShortBatches = 0; // 连续返回不足的批次数
 
   while (remaining > 0) {
     const batchCount = Math.min(remaining, BATCH_SIZE);
     batchIndex++;
     const userPrompt = `请生成 ${batchCount} 条测试用例。\n\n${prompt}`;
     let success = false;
+
+    // 更新批次总数
+    await db.update(schema.generationProgress)
+      .set({ batchTotal: batchIndex })
+      .where(and(
+        eq(schema.generationProgress.taskId, taskId),
+        eq(schema.generationProgress.dimension, dimension)
+      ));
 
     for (let retry = 0; retry <= MAX_BATCH_RETRIES; retry++) {
       logger.info({ taskId, dimension, batchIndex, batchCount, retry }, '正在生成用例批次');
@@ -286,6 +381,7 @@ async function generateByDimension(
           weight: Math.min(5, Math.max(1, c.weight || 3)),
           evaluationStrategy: (c.evaluationStrategy as any) || 'hybrid',
           status: 'pending' as const,
+          newSession: false,
           orderIndex: allCases.length + index,
         }));
 
@@ -293,11 +389,29 @@ async function generateByDimension(
         remaining -= cases.length;
         success = true;
 
+        // 更新进度：成功批次 + 已生成数量
+        await db.update(schema.generationProgress)
+          .set({
+            batchSuccess: allCases.length > 0 ? batchIndex - (await getFailedBatchCount(taskId, dimension)) : 0,
+            generatedCount: allCases.length,
+          })
+          .where(and(
+            eq(schema.generationProgress.taskId, taskId),
+            eq(schema.generationProgress.dimension, dimension)
+          ));
+
         logger.info({ taskId, dimension, batchIndex, generated: cases.length }, '批次生成成功');
 
-        // 如果这批生成的数量少于请求的，说明 LLM 自行决定了数量，不再继续
+        // 修复：LLM 返回不足时不直接结束，而是继续尝试
         if (cases.length < batchCount) {
-          remaining = 0;
+          consecutiveShortBatches++;
+          // 连续 2 批返回不足才结束该维度（避免无限循环）
+          if (consecutiveShortBatches >= 2) {
+            logger.info({ taskId, dimension, consecutiveShortBatches }, '连续多批返回不足，结束该维度');
+            remaining = 0;
+          }
+        } else {
+          consecutiveShortBatches = 0;
         }
         break;
       } catch (error) {
@@ -310,18 +424,77 @@ async function generateByDimension(
     }
 
     if (!success) {
+      // 更新进度：失败批次 + 错误信息
+      const progressRow = await db.select().from(schema.generationProgress)
+        .where(and(
+          eq(schema.generationProgress.taskId, taskId),
+          eq(schema.generationProgress.dimension, dimension)
+        ));
+      const existingErrors: string[] = progressRow[0]?.errorMessages
+        ? JSON.parse(progressRow[0].errorMessages)
+        : [];
+      existingErrors.push(`批次${batchIndex}: ${MAX_BATCH_RETRIES + 1}次重试全部失败`);
+
+      await db.update(schema.generationProgress)
+        .set({
+          batchFailed: existingErrors.length,
+          errorMessages: JSON.stringify(existingErrors),
+        })
+        .where(and(
+          eq(schema.generationProgress.taskId, taskId),
+          eq(schema.generationProgress.dimension, dimension)
+        ));
+
       logger.warn({ taskId, dimension, batchIndex }, '批次重试全部失败，跳过');
       remaining -= batchCount;
     }
   }
 
+  // 标记维度完成/失败
+  const finalStatus = allCases.length > 0 ? 'done' : 'failed';
+  await db.update(schema.generationProgress)
+    .set({
+      status: finalStatus,
+      generatedCount: allCases.length,
+      finishedAt: Date.now(),
+    })
+    .where(and(
+      eq(schema.generationProgress.taskId, taskId),
+      eq(schema.generationProgress.dimension, dimension)
+    ));
+
   return allCases;
 }
 
 /**
- * 获取维度对应的 Prompt 模板
+ * 获取指定维度的失败批次数
  */
-function getPromptForDimension(dimension: Dimension): string {
+async function getFailedBatchCount(taskId: string, dimension: string): Promise<number> {
+  const row = await db.select().from(schema.generationProgress)
+    .where(and(
+      eq(schema.generationProgress.taskId, taskId),
+      eq(schema.generationProgress.dimension, dimension)
+    ));
+  return row[0]?.batchFailed || 0;
+}
+
+/**
+ * 获取维度 Prompt（优先从数据库读取，降级到代码默认值）
+ */
+async function getPromptForDimension(dimension: Dimension): Promise<string> {
+  try {
+    const dbTemplate = await db.select().from(schema.testTemplates)
+      .where(and(
+        eq(schema.testTemplates.type, 'dimension'),
+        eq(schema.testTemplates.dimension, dimension),
+        eq(schema.testTemplates.isActive, 1)
+      ));
+    if (dbTemplate.length > 0) {
+      return dbTemplate[0].content;
+    }
+  } catch {}
+
+  // 降级到代码默认值
   switch (dimension) {
     case 'alignment': return ALIGNMENT_PROMPT;
     case 'boundary': return BOUNDARY_PROMPT;
@@ -333,26 +506,57 @@ function getPromptForDimension(dimension: Dimension): string {
 }
 
 /**
- * Jaccard 去重
- * 对 turns 最后一条 user 消息分词，相似度 > 0.85 视为重复
+ * 获取 Good/Bad Case 示例，用于 few-shot 注入
+ */
+async function getFewShotExamples(dimension: Dimension): Promise<string> {
+  try {
+    const goodCases = await db.select().from(schema.testTemplates)
+      .where(and(
+        eq(schema.testTemplates.type, 'good_case'),
+        eq(schema.testTemplates.dimension, dimension),
+        eq(schema.testTemplates.isActive, 1)
+      ));
+    const badCases = await db.select().from(schema.testTemplates)
+      .where(and(
+        eq(schema.testTemplates.type, 'bad_case'),
+        eq(schema.testTemplates.dimension, dimension),
+        eq(schema.testTemplates.isActive, 1)
+      ));
+
+    if (goodCases.length === 0 && badCases.length === 0) return '';
+
+    let fewShot = '\n\n【参考示例】\n';
+    if (goodCases.length > 0) {
+      fewShot += '\n好的用例示例（请参考这种风格和质量）：\n';
+      for (const gc of goodCases.slice(0, 3)) {
+        fewShot += `- ${gc.name}: ${gc.content}\n`;
+      }
+    }
+    if (badCases.length > 0) {
+      fewShot += '\n不好的用例示例（请避免这种问题）：\n';
+      for (const bc of badCases.slice(0, 3)) {
+        fewShot += `- ${bc.name}: ${bc.content}\n`;
+      }
+    }
+    return fewShot;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 去重：基于 Jaccard 相似度
  */
 function deduplicateCases(cases: TestCase[]): TestCase[] {
+  const SIMILARITY_THRESHOLD = 0.85;
   const result: TestCase[] = [];
 
   for (const c of cases) {
-    const lastUserMsg = getLastUserMessage(c);
-    const tokens = tokenize(lastUserMsg);
-
-    let isDuplicate = false;
-    for (const existing of result) {
-      const existingTokens = tokenize(getLastUserMessage(existing));
-      const similarity = jaccardSimilarity(tokens, existingTokens);
-      if (similarity > 0.85) {
-        isDuplicate = true;
-        break;
-      }
-    }
-
+    const lastMsg = getLastUserMessage(c);
+    const isDuplicate = result.some(existing => {
+      const existingMsg = getLastUserMessage(existing);
+      return jaccardSimilarity(lastMsg, existingMsg) > SIMILARITY_THRESHOLD;
+    });
     if (!isDuplicate) {
       result.push(c);
     }
@@ -361,38 +565,43 @@ function deduplicateCases(cases: TestCase[]): TestCase[] {
   return result;
 }
 
+/**
+ * 获取用例最后一条用户消息
+ */
 function getLastUserMessage(c: TestCase): string {
   const userTurns = c.turns.filter(t => t.role === 'user');
   return userTurns[userTurns.length - 1]?.content || '';
 }
 
-function tokenize(text: string): Set<string> {
-  // 简单的中文分词：按字符 + 双字组合
-  const chars = text.replace(/\s+/g, '').split('');
-  const tokens = new Set<string>();
-  chars.forEach(c => tokens.add(c));
-  for (let i = 0; i < chars.length - 1; i++) {
-    tokens.add(chars[i] + chars[i + 1]);
-  }
-  return tokens;
-}
+/**
+ * Jaccard 相似度（基于字符 bigram）
+ */
+function jaccardSimilarity(a: string, b: string): number {
+  if (!a || !b) return 0;
+  const bigramsA = new Set<string>();
+  const bigramsB = new Set<string>();
 
-function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 && b.size === 0) return 1;
-  const intersection = new Set([...a].filter(x => b.has(x)));
-  const union = new Set([...a, ...b]);
-  return intersection.size / union.size;
+  for (let i = 0; i < a.length - 1; i++) bigramsA.add(a.slice(i, i + 2));
+  for (let i = 0; i < b.length - 1; i++) bigramsB.add(b.slice(i, i + 2));
+
+  if (bigramsA.size === 0 || bigramsB.size === 0) return 0;
+
+  let intersection = 0;
+  for (const bg of bigramsA) {
+    if (bigramsB.has(bg)) intersection++;
+  }
+
+  return intersection / (bigramsA.size + bigramsB.size - intersection);
 }
 
 /**
- * 自动自审：评估用例质量，过滤低质量用例
+ * 自审过滤低质量用例
  */
 async function selfReviewCases(taskId: string, cases: TestCase[]): Promise<TestCase[]> {
-  if (cases.length === 0) return cases;
+  if (cases.length === 0) return [];
 
-  // 分批审查（每批最多 20 条，避免 token 超限）
-  const batchSize = 20;
   const reviewed: TestCase[] = [];
+  const batchSize = 10;
 
   for (let i = 0; i < cases.length; i += batchSize) {
     const batch = cases.slice(i, i + batchSize);

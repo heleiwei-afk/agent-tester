@@ -99,6 +99,7 @@ export async function DELETE(
       await db.delete(schema.verdicts).where(eq(schema.verdicts.taskId, id));
       await db.delete(schema.results).where(eq(schema.results.taskId, id));
       await db.delete(schema.cases).where(eq(schema.cases.taskId, id));
+      await db.delete(schema.generationProgress).where(eq(schema.generationProgress.taskId, id));
       await db.delete(schema.tasks).where(eq(schema.tasks.id, id));
       return NextResponse.json({ message: '任务已彻底删除' });
     } else {

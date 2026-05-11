@@ -6,6 +6,9 @@ import type { TaskConfig } from '@/lib/types';
 
 /**
  * POST /api/tasks/[id]/execute — 用户确认用例后开始执行
+ * 
+ * 改为入队单个串行 Job：同一任务的所有用例共享会话，按顺序执行。
+ * 遇到 new_session=1 的用例时重建会话。
  */
 export async function POST(
   request: NextRequest,
@@ -31,11 +34,13 @@ export async function POST(
 
     const config: TaskConfig = JSON.parse(task.configJson);
 
-    // 获取所有 pending 用例
+    // 获取所有 pending 用例（按 orderIndex 排序）
     const cases = await db.select().from(schema.cases)
       .where(eq(schema.cases.taskId, id));
 
-    const pendingCases = cases.filter(c => c.status === 'pending');
+    const pendingCases = cases
+      .filter(c => c.status === 'pending')
+      .sort((a, b) => a.orderIndex - b.orderIndex);
 
     if (pendingCases.length === 0) {
       return NextResponse.json({
@@ -44,29 +49,21 @@ export async function POST(
       }, { status: 400 });
     }
 
-    // 批量入队
-    await executionQueue.addBulk(
-      pendingCases.map((c) => ({
-        name: 'run-case',
-        data: {
-          caseId: c.id,
-          taskId: id,
-          platform: config.platform,
-          apiKey: config.apiKey,
-          botId: config.botId,
-          turns: JSON.parse(c.turnsJson),
-          timeoutSec: config.timeoutSec,
-          retryCount: config.retryCount,
-        },
-        opts: {
-          attempts: config.retryCount + 1,
-          backoff: { type: 'exponential' as const, delay: 2000 },
-          removeOnComplete: 100,
-          removeOnFail: false,
-          priority: c.weight,
-        },
-      }))
-    );
+    // 入队单个串行 Job（包含所有用例 ID）
+    await executionQueue.add('run-task-serial', {
+      taskId: id,
+      caseIds: pendingCases.map(c => c.id),
+      platform: config.platform,
+      apiKey: config.apiKey,
+      botId: config.botId,
+      testContext: config.testContext || null,
+      timeoutSec: config.timeoutSec,
+      retryCount: config.retryCount,
+    }, {
+      attempts: 1, // 整个任务不重试（单条用例内部有重试）
+      removeOnComplete: 50,
+      removeOnFail: false,
+    });
 
     // 更新任务状态
     await db.update(schema.tasks)
@@ -74,7 +71,7 @@ export async function POST(
       .where(eq(schema.tasks.id, id));
 
     return NextResponse.json({
-      message: '开始执行',
+      message: '开始执行（串行模式，共享会话）',
       totalCases: pendingCases.length,
     });
 

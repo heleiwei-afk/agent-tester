@@ -46,6 +46,9 @@ export default function RootLayout({
                   <Link href="/agents" className="text-sm text-gray-600 hover:text-gray-900 transition-colors">
                     智能体列表
                   </Link>
+                  <Link href="/templates" className="text-sm text-gray-600 hover:text-gray-900 transition-colors">
+                    模板管理
+                  </Link>
                 </nav>
               </div>
               <Link href="/settings" className="text-sm text-gray-500 hover:text-gray-700 transition-colors">

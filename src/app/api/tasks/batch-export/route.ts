@@ -54,7 +54,7 @@ export async function POST(request: NextRequest) {
             subType: c.subType, turns: JSON.parse(c.turnsJson),
             expectation: c.expectation, passCriteria: JSON.parse(c.passCriteriaJson),
             weight: c.weight, evaluationStrategy: c.evaluationStrategy as any,
-            status: c.status as any, orderIndex: c.orderIndex,
+            status: c.status as any, newSession: c.newSession === 1, orderIndex: c.orderIndex,
           })),
           verdicts: verdicts.map(v => ({
             caseId: v.caseId, pass: v.pass === 1, score: v.score,

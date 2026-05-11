@@ -4,7 +4,7 @@ import { initDatabase } from '@/lib/db/migrate';
 import { TaskConfigSchema } from '@/lib/types';
 import { v4 as uuid } from 'uuid';
 import { desc, eq, sql } from 'drizzle-orm';
-import { generationQueue } from '@/lib/queue';
+import { addGenerationJob } from '@/lib/queue';
 
 // 确保数据库初始化
 let dbInitialized = false;
@@ -38,29 +38,18 @@ export async function POST(request: NextRequest) {
       botId: config.botId,
       platform: config.platform,
       configJson: JSON.stringify(config),
-      status: 'pending',
+      status: 'analyzing',
       totalCases: config.caseCount,
       createdAt: now,
     });
 
-    // 入队：触发用例生成
-    await generationQueue.add('generate', {
-      taskId,
-      config,
-    }, {
-      attempts: 2,
-      backoff: { type: 'exponential', delay: 3000 },
-    });
-
-    // 更新状态为 generating
-    await db.update(schema.tasks)
-      .set({ status: 'generating' })
-      .where(eq(schema.tasks.id, taskId));
+    // 入队：触发大纲生成
+    await addGenerationJob(taskId, config);
 
     return NextResponse.json({
       id: taskId,
-      status: 'generating',
-      message: '任务已创建，正在生成测试用例...',
+      status: 'analyzing',
+      message: '任务已创建，正在分析智能体并生成测试大纲...',
     }, { status: 201 });
 
   } catch (error: any) {
@@ -89,39 +78,40 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const status = searchParams.get('status');
   const page = parseInt(searchParams.get('page') || '1');
-  const pageSize = parseInt(searchParams.get('pageSize') || '20');
+  const pageSize = parseInt(searchParams.get('pageSize') || '30');
   const offset = (page - 1) * pageSize;
 
   try {
-    let query = db.select().from(schema.tasks);
-
+    // 构建 status 筛选条件（复用于 query 和 count）
+    let statusCondition: any = undefined;
     if (status) {
-      // 支持分组筛选
       if (status === 'running') {
-        query = query.where(
-          sql`${schema.tasks.status} IN ('generating', 'running')`
-        ) as any;
+        statusCondition = sql`${schema.tasks.status} IN ('analyzing', 'outline_review', 'generating', 'running', 'completing')`;
       } else if (status === 'waiting') {
-        query = query.where(
-          sql`${schema.tasks.status} IN ('pending', 'reviewing')`
-        ) as any;
+        statusCondition = sql`${schema.tasks.status} IN ('pending', 'reviewing')`;
       } else if (status === 'completed') {
-        query = query.where(
-          sql`${schema.tasks.status} IN ('done', 'cancelled', 'failed')`
-        ) as any;
+        statusCondition = sql`${schema.tasks.status} IN ('done', 'cancelled', 'failed')`;
       } else {
-        query = query.where(eq(schema.tasks.status, status)) as any;
+        statusCondition = eq(schema.tasks.status, status);
       }
     }
 
+    // 查询任务列表
+    let query = db.select().from(schema.tasks);
+    if (statusCondition) {
+      query = query.where(statusCondition) as any;
+    }
     const tasks = await (query as any)
       .orderBy(desc(schema.tasks.createdAt))
       .limit(pageSize)
       .offset(offset);
 
-    // 获取总数
-    const countResult = await db.select({ count: sql<number>`count(*)` })
-      .from(schema.tasks);
+    // 获取总数（应用相同的 status 筛选）
+    let countQuery = db.select({ count: sql<number>`count(*)` }).from(schema.tasks);
+    if (statusCondition) {
+      countQuery = countQuery.where(statusCondition) as any;
+    }
+    const countResult = await countQuery;
     const total = countResult[0]?.count || 0;
 
     return NextResponse.json({

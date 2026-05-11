@@ -75,6 +75,7 @@ export async function GET(
         weight: c.weight,
         evaluationStrategy: c.evaluationStrategy as any,
         status: c.status as any,
+        newSession: c.newSession === 1,
         orderIndex: c.orderIndex,
       })),
       verdicts: verdicts.map(v => ({

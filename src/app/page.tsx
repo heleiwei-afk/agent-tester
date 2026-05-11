@@ -23,15 +23,16 @@ export default function NewTaskPage() {
 
   const [form, setForm] = useState({
     platform: 'bailian',
-    apiKey: '',
-    botId: '',
+    apiKey: 'sk-b28c1dec874041e597df2d5cb97dcc5f',
+    botId: 'd0fa5ebac73b4b0699b0ddcd79159b09',
     agentName: '',
     expectedBehavior: '',
     industry: 'education',
-    caseCount: 50,
+    caseCount: 200,
     multiTurnRatio: 0.2,
     timeoutSec: 30,
     retryCount: 2,
+    testContext: '',
   });
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -205,6 +206,23 @@ export default function NewTaskPage() {
                   条（10-200），预计耗时约 {estimateTime} 分钟
                 </span>
               </div>
+            </div>
+
+            {/* Step 6: 测试素材（可选） */}
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">
+                Step 6 · 测试素材（可选）
+              </Label>
+              <p className="text-xs text-gray-500">
+                每次新会话的第一轮会自动传入此内容。适用于需要课程内容、用户信息等上下文的智能体。
+              </p>
+              <Textarea
+                placeholder={'{\n  "user_info": { "name": "测试用户", "grade": "三年级" },\n  "course_info": { "course_name": "...", "lecture_material": "..." }\n}'}
+                value={form.testContext}
+                onChange={(e) => setForm({ ...form, testContext: e.target.value })}
+                rows={6}
+                className="resize-y font-mono text-xs"
+              />
             </div>
 
             {/* 高级设置 */}

@@ -20,6 +20,8 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Progress } from '@/components/ui/progress';
+import { PaginationControl } from '@/components/ui/pagination-control';
+import { Loader2 } from 'lucide-react';
 
 interface Task {
   id: string;
@@ -36,31 +38,48 @@ interface Task {
   finishedAt: number | null;
 }
 
+interface Pagination {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+}
+
 export default function TaskListPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [statusFilter, setStatusFilter] = useState('all');
   const [loading, setLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [exporting, setExporting] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState<Pagination | null>(null);
 
   useEffect(() => {
     fetchTasks();
     const interval = setInterval(fetchTasks, 5000);
     return () => clearInterval(interval);
-  }, [statusFilter]);
+  }, [statusFilter, page]);
 
   async function fetchTasks() {
     try {
       const params = new URLSearchParams();
       if (statusFilter !== 'all') params.set('status', statusFilter);
+      params.set('page', String(page));
+      params.set('pageSize', '30');
       const res = await fetch(`/api/tasks?${params}`);
       const data = await res.json();
       setTasks(data.tasks || []);
+      setPagination(data.pagination || null);
     } catch (err) {
       console.error('获取任务列表失败', err);
     } finally {
       setLoading(false);
     }
+  }
+
+  function handleStatusFilterChange(v: string) {
+    setStatusFilter(v);
+    setPage(1); // 切换筛选时重置到第 1 页
   }
 
   function toggleSelect(id: string) {
@@ -124,7 +143,7 @@ export default function TaskListPage() {
               </div>
             )}
           </div>
-           <Select value={statusFilter} onValueChange={(v) => v && setStatusFilter(v)}>
+           <Select value={statusFilter} onValueChange={(v) => v && handleStatusFilterChange(v)}>
             <SelectTrigger className="w-40">
               <SelectValue placeholder="全部状态" />
             </SelectTrigger>
@@ -147,6 +166,7 @@ export default function TaskListPage() {
               </Link>
             </div>
           ) : (
+            <>
             <Table>
               <TableHeader>
                 <TableRow>
@@ -212,7 +232,15 @@ export default function TaskListPage() {
                         >
                           详情
                         </Link>
-                        {task.status === 'done' && (
+                        {task.status === 'outline_review' && (
+                          <Link
+                            href={`/tasks/${task.id}/outline`}
+                            className="text-xs text-orange-600 hover:underline"
+                          >
+                            审核大纲
+                          </Link>
+                        )}
+                        {(task.status === 'done' || task.status === 'running') && (
                           <Link
                             href={`/tasks/${task.id}/cases`}
                             className="text-xs text-blue-600 hover:underline"
@@ -236,6 +264,15 @@ export default function TaskListPage() {
                 ))}
               </TableBody>
             </Table>
+            {pagination && (
+              <PaginationControl
+                page={pagination.page}
+                totalPages={pagination.totalPages}
+                total={pagination.total}
+                onPageChange={setPage}
+              />
+            )}
+            </>
           )}
         </CardContent>
       </Card>
@@ -246,9 +283,12 @@ export default function TaskListPage() {
 function StatusBadge({ status }: { status: string }) {
   const config: Record<string, { label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline' }> = {
     pending: { label: '等待中', variant: 'outline' },
+    analyzing: { label: '分析中', variant: 'secondary' },
+    outline_review: { label: '大纲审核', variant: 'secondary' },
     generating: { label: '生成用例', variant: 'secondary' },
     reviewing: { label: '待审核', variant: 'secondary' },
     running: { label: '执行中', variant: 'default' },
+    completing: { label: '生成报告', variant: 'default' },
     done: { label: '已完成', variant: 'default' },
     cancelled: { label: '已取消', variant: 'outline' },
     failed: { label: '失败', variant: 'destructive' },
@@ -258,6 +298,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function ProgressCell({ task }: { task: Task }) {
+  // 已完成：显示通过率
   if (task.status === 'done' && task.totalCases && task.passedCases !== null) {
     return (
       <span className="text-sm">
@@ -265,6 +306,7 @@ function ProgressCell({ task }: { task: Task }) {
       </span>
     );
   }
+  // 执行中：显示进度条
   if (task.status === 'running' && task.totalCases) {
     const done = (task.passedCases || 0) + (task.failedCases || 0);
     const pct = Math.round((done / task.totalCases) * 100);
@@ -273,6 +315,41 @@ function ProgressCell({ task }: { task: Task }) {
         <Progress value={pct} className="w-20 h-2" />
         <span className="text-xs text-gray-500">{pct}%</span>
       </div>
+    );
+  }
+  // 分析中 / 生成大纲
+  if (task.status === 'analyzing') {
+    return (
+      <span className="flex items-center gap-1 text-xs text-blue-600">
+        <Loader2 className="size-3 animate-spin" />
+        分析智能体中...
+      </span>
+    );
+  }
+  // 大纲待审核
+  if (task.status === 'outline_review') {
+    return (
+      <Link href={`/tasks/${task.id}/outline`} className="text-xs text-orange-600 hover:underline">
+        大纲待审核
+      </Link>
+    );
+  }
+  // 生成用例中
+  if (task.status === 'generating') {
+    return (
+      <span className="flex items-center gap-1 text-xs text-blue-600">
+        <Loader2 className="size-3 animate-spin" />
+        生成用例中...
+      </span>
+    );
+  }
+  // 生成报告中
+  if (task.status === 'completing') {
+    return (
+      <span className="flex items-center gap-1 text-xs text-blue-600">
+        <Loader2 className="size-3 animate-spin" />
+        生成报告中...
+      </span>
     );
   }
   return <span className="text-xs text-gray-400">-</span>;

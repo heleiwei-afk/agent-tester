@@ -13,7 +13,7 @@ export const DimensionEnum = z.enum(['alignment', 'industry', 'boundary', 'badca
 export type Dimension = z.infer<typeof DimensionEnum>;
 
 // 任务状态
-export const TaskStatusEnum = z.enum(['pending', 'generating', 'reviewing', 'running', 'done', 'cancelled', 'failed']);
+export const TaskStatusEnum = z.enum(['pending', 'analyzing', 'outline_review', 'generating', 'reviewing', 'running', 'completing', 'done', 'cancelled', 'failed']);
 export type TaskStatus = z.infer<typeof TaskStatusEnum>;
 
 // 用例状态
@@ -44,6 +44,8 @@ export const TaskConfigSchema = z.object({
   multiTurnRatio: z.number().min(0).max(1).default(0.2),
   timeoutSec: z.number().int().min(5).max(120).default(30),
   retryCount: z.number().int().min(0).max(5).default(2),
+  testContext: z.string().optional(), // 测试素材 JSON（每次新会话首轮传入）
+  systemPrompt: z.string().optional(), // 用户手动粘贴的 system prompt（可选）
 });
 export type TaskConfig = z.infer<typeof TaskConfigSchema>;
 
@@ -67,7 +69,11 @@ export interface TestCase {
   checkpoints?: string[];
   evidenceHints?: string[];
   status: CaseStatus;
+  newSession: boolean;  // true = 此用例开始新会话
   orderIndex: number;
+  goalId?: string;      // 大纲追溯：测试目标 ID
+  scenarioId?: string;  // 大纲追溯：测试场景 ID
+  pointId?: string;     // 大纲追溯：测试点 ID
 }
 
 // 适配器响应
@@ -135,4 +141,42 @@ export interface SelfReviewResult {
   overallQuality: number;  // 综合质量 0-10
   reason: string;
   shouldRegenerate: boolean;
+}
+
+// ============ 测试大纲相关类型 ============
+
+export interface TestOutline {
+  agentAnalysis: AgentAnalysis;
+  testGoals: TestGoal[];
+}
+
+export interface AgentAnalysis {
+  coreValue: string;           // 智能体的核心价值
+  targetUsers: string[];       // 目标用户群体
+  keyCapabilities: string[];   // 关键能力
+  riskAreas: string[];         // 高风险区域
+}
+
+export interface TestGoal {
+  id: string;
+  name: string;
+  priority: 'critical' | 'high' | 'medium' | 'low';
+  rationale: string;           // 为什么要测这个
+  scenarios: TestScenario[];
+}
+
+export interface TestScenario {
+  id: string;
+  name: string;
+  userContext: string;         // 用户在什么情况下会遇到
+  expectedOutcome: string;     // 期望智能体如何表现
+  testPoints: TestPoint[];
+}
+
+export interface TestPoint {
+  id: string;
+  description: string;
+  testType: 'positive' | 'negative' | 'boundary' | 'stress';
+  estimatedCaseCount: number;
+  passCriteria: string[];
 }
