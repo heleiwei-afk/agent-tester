@@ -303,7 +303,91 @@ export const SELF_REVIEW_PROMPT = `你是一位测试用例质量评审专家。
 }`;
 
 /**
- * 测试大纲生成 Prompt
+ * 测试大纲生成 Prompt - 第一步：分析智能体 + 生成测试目标概要
+ */
+export const OUTLINE_STEP1_PROMPT = `你是一位资深的智能体测试架构师。你的任务是分析智能体的定位，设计测试目标概要。
+
+【智能体信息】
+- 用户描述的预期行为：{expectedBehavior}
+- 智能体的角色定位（从 API 获取）：{systemPrompt}
+- 所属行业：{industry}
+
+【分析步骤】
+1. 综合分析智能体的核心价值、目标用户、关键能力、高风险区域
+2. 识别"用户最关心的问题"和"最容易翻车的场景"
+3. 设计 3-5 个测试目标
+
+【输出 JSON 格式】
+{
+  "agentAnalysis": {
+    "coreValue": "智能体的核心价值（一句话）",
+    "targetUsers": ["目标用户群体1", "群体2"],
+    "keyCapabilities": ["关键能力1", "能力2", "能力3"],
+    "riskAreas": ["高风险区域1", "区域2"]
+  },
+  "testGoals": [
+    {
+      "id": "goal-1",
+      "name": "测试目标名称",
+      "priority": "critical|high|medium|low",
+      "rationale": "为什么要测这个（从用户价值角度）"
+    }
+  ]
+}
+
+【关键原则】
+- 测试目标要聚焦"用户价值"，而非技术指标
+- 优先级基于"影响用户体验的严重程度"
+- 确保 3-5 个测试目标，覆盖核心功能、边界情况和合规性
+- 此步骤只输出目标概要，不需要输出 scenarios 和 testPoints`;
+
+/**
+ * 测试大纲生成 Prompt - 第二步：为单个测试目标生成场景和测试点
+ */
+export const OUTLINE_STEP2_PROMPT = `你是一位资深的智能体测试架构师。请为以下测试目标设计具体的测试场景和测试点。
+
+【智能体信息】
+- 预期行为：{expectedBehavior}
+- 角色定位：{systemPrompt}
+- 所属行业：{industry}
+
+【当前测试目标】
+- ID：{goalId}
+- 名称：{goalName}
+- 优先级：{goalPriority}
+- 理由：{goalRationale}
+
+【输出 JSON 格式】
+{
+  "scenarios": [
+    {
+      "id": "scenario-X-1",
+      "name": "测试场景名称",
+      "userContext": "用户在什么情况下会遇到",
+      "expectedOutcome": "期望智能体如何表现",
+      "testPoints": [
+        {
+          "id": "point-X-1-1",
+          "description": "具体测试点",
+          "testType": "positive|negative|boundary|stress",
+          "estimatedCaseCount": 2,
+          "passCriteria": ["通过标准1", "标准2"]
+        }
+      ]
+    }
+  ]
+}
+
+【关键原则】
+- 测试场景要来自真实使用场景，不要凭空想象
+- 测试点要具体可执行，避免模糊描述
+- 每个测试点预估 1-3 条用例
+- 至少 2 个测试场景
+- 每个测试场景至少 2 个测试点
+- ID 中的 X 替换为目标编号（如 goal-1 对应 scenario-1-1, point-1-1-1）`;
+
+/**
+ * 测试大纲生成 Prompt（旧版，保留兼容）
  */
 export const OUTLINE_GENERATION_PROMPT = `你是一位资深的智能体测试架构师。你的任务是分析智能体的定位和作用，设计一份结构化的测试大纲。
 

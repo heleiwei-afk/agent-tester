@@ -6,35 +6,97 @@ import { v4 as uuid } from 'uuid';
 import { db, schema } from '../db';
 import { eq } from 'drizzle-orm';
 import type { TaskConfig, TestOutline, TestGoal, TestScenario, TestPoint, TestCase, Dimension } from '../types';
-import { OUTLINE_GENERATION_PROMPT } from './prompts';
+import { OUTLINE_STEP1_PROMPT, OUTLINE_STEP2_PROMPT } from './prompts';
 import { callLLMForJSON } from '../llm';
 import { createTaskLogger } from '../logger';
 
 const logger = createTaskLogger('outline-generator');
 
 /**
- * 调用 LLM 生成测试大纲
+ * 分步生成测试大纲
+ * Step 1: 生成 agentAnalysis + goals 概要
+ * Step 2: 逐个 goal 生成 scenarios 和 testPoints
+ * Step 3: 合并为完整 TestOutline
  */
 async function callLLMForOutline(
   expectedBehavior: string,
   systemPrompt: string | null,
   industry: string
 ): Promise<TestOutline> {
-  const prompt = OUTLINE_GENERATION_PROMPT
+  const model = process.env.LLM_GENERATION_MODEL || process.env.LLM_MODEL || 'claude-sonnet-4-6';
+
+  // === Step 1: 生成 agentAnalysis + goals 概要 ===
+  const step1Prompt = OUTLINE_STEP1_PROMPT
     .replace('{expectedBehavior}', expectedBehavior)
     .replace('{systemPrompt}', systemPrompt || '（未提供）')
     .replace('{industry}', industry);
 
-  const model = process.env.LLM_GENERATION_MODEL || process.env.LLM_MODEL || 'claude-sonnet-4-6';
+  logger.info('Step 1: 生成测试目标概要...');
 
-  const outline = await callLLMForJSON<TestOutline>({
-    systemPrompt: '你是专业的智能体测试架构师。严格按照要求的 JSON 格式输出。确保输出完整的 JSON，不要截断。',
-    userPrompt: prompt,
+  const step1Result = await callLLMForJSON<{
+    agentAnalysis: TestOutline['agentAnalysis'];
+    testGoals: Array<{ id: string; name: string; priority: string; rationale: string }>;
+  }>({
+    systemPrompt: '你是专业的智能体测试架构师。严格按照要求的 JSON 格式输出。',
+    userPrompt: step1Prompt,
     temperature: 0.7,
-    maxTokens: 16384,
+    maxTokens: 4096,
     model,
   });
 
+  logger.info({ goalCount: step1Result.testGoals.length }, 'Step 1 完成');
+
+  // === Step 2: 逐个 goal 生成 scenarios 和 testPoints ===
+  const fullGoals: TestGoal[] = [];
+
+  for (const goalSummary of step1Result.testGoals) {
+    logger.info({ goalId: goalSummary.id, goalName: goalSummary.name }, 'Step 2: 生成场景和测试点...');
+
+    const step2Prompt = OUTLINE_STEP2_PROMPT
+      .replace('{expectedBehavior}', expectedBehavior)
+      .replace('{systemPrompt}', systemPrompt || '（未提供）')
+      .replace('{industry}', industry)
+      .replace('{goalId}', goalSummary.id)
+      .replace('{goalName}', goalSummary.name)
+      .replace('{goalPriority}', goalSummary.priority)
+      .replace('{goalRationale}', goalSummary.rationale);
+
+    try {
+      const step2Result = await callLLMForJSON<{ scenarios: TestScenario[] }>({
+        systemPrompt: '你是专业的智能体测试架构师。严格按照要求的 JSON 格式输出。',
+        userPrompt: step2Prompt,
+        temperature: 0.7,
+        maxTokens: 8192,
+        model,
+      });
+
+      fullGoals.push({
+        id: goalSummary.id,
+        name: goalSummary.name,
+        priority: goalSummary.priority as TestGoal['priority'],
+        rationale: goalSummary.rationale,
+        scenarios: step2Result.scenarios || [],
+      });
+    } catch (error) {
+      logger.warn({ goalId: goalSummary.id, error: (error as Error).message }, 'Step 2 单个 goal 生成失败，跳过');
+      // 即使单个 goal 失败，也保留概要信息
+      fullGoals.push({
+        id: goalSummary.id,
+        name: goalSummary.name,
+        priority: goalSummary.priority as TestGoal['priority'],
+        rationale: goalSummary.rationale,
+        scenarios: [],
+      });
+    }
+  }
+
+  // === Step 3: 合并为完整 TestOutline ===
+  const outline: TestOutline = {
+    agentAnalysis: step1Result.agentAnalysis,
+    testGoals: fullGoals,
+  };
+
+  logger.info({ goalCount: fullGoals.length }, '分步生成完成');
   return outline;
 }
 
