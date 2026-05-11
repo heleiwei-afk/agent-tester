@@ -111,14 +111,11 @@ export async function GET(
           },
         });
       }
-      // PDF 生成失败，降级到 Markdown
-      const markdown = task.reportContent || generateMarkdownReport(reportData);
-      return new NextResponse(markdown, {
-        headers: {
-          'Content-Type': 'text/markdown; charset=utf-8',
-          'Content-Disposition': `attachment; filename="report-${id}.md"`,
-        },
-      });
+      // PDF 生成彻底失败，返回错误而非静默降级
+      return NextResponse.json({
+        code: 'PDF_GENERATION_FAILED',
+        message: 'PDF 生成失败，请尝试下载 Markdown 格式',
+      }, { status: 500 });
     }
 
     if (format === 'json') {

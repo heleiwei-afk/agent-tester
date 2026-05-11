@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  serverExternalPackages: ['pdfkit', 'fontkit', 'puppeteer'],
 };
 
 export default nextConfig;

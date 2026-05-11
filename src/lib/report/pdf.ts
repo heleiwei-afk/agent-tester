@@ -5,21 +5,50 @@ const logger = createTaskLogger('pdf-report');
 
 /**
  * 生成 PDF 报告
- * 将 Markdown 报告渲染为 HTML，再用 Puppeteer 转 PDF
- * 如果 Puppeteer 不可用，降级返回 null
+ * 策略：Puppeteer 优先（高质量排版），pdfkit fallback（轻量无依赖）
+ * 两者都失败才返回 null
  */
 export async function generatePDFReport(reportData: any): Promise<Buffer | null> {
+  // 尝试 Puppeteer（高质量 HTML → PDF）
   try {
-    const markdown = generateMarkdownReport(reportData);
-    const html = markdownToHTML(markdown, reportData);
+    const result = await generatePDFWithPuppeteer(reportData);
+    if (result) {
+      logger.info({ size: result.length }, 'Puppeteer PDF 生成成功');
+      return result;
+    }
+  } catch (error) {
+    logger.warn({ error: (error as Error).message }, 'Puppeteer PDF 生成失败，尝试 pdfkit fallback');
+  }
 
-    // 动态导入 puppeteer（避免构建时报错）
-    const puppeteer = await import('puppeteer');
-    const browser = await puppeteer.default.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    });
+  // Fallback: pdfkit（纯 Node.js，无需 Chrome）
+  try {
+    const result = await generatePDFWithPDFKit(reportData);
+    if (result) {
+      logger.info({ size: result.length }, 'pdfkit PDF 生成成功（fallback）');
+      return result;
+    }
+  } catch (error) {
+    logger.error({ error: (error as Error).message }, 'pdfkit PDF 生成也失败');
+  }
 
+  return null;
+}
+
+// ============================================================
+// 方案 A: Puppeteer（HTML → PDF，高质量排版）
+// ============================================================
+
+async function generatePDFWithPuppeteer(reportData: any): Promise<Buffer | null> {
+  const markdown = generateMarkdownReport(reportData);
+  const html = markdownToHTML(markdown, reportData);
+
+  const puppeteer = await import('puppeteer');
+  const browser = await puppeteer.default.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+  });
+
+  try {
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: 'networkidle0' });
 
@@ -29,13 +58,188 @@ export async function generatePDFReport(reportData: any): Promise<Buffer | null>
       printBackground: true,
     });
 
-    await browser.close();
     return Buffer.from(pdf);
-  } catch (error) {
-    logger.error({ error }, 'PDF 生成失败，降级到 Markdown');
-    return null;
+  } finally {
+    await browser.close();
   }
 }
+
+// ============================================================
+// 方案 B: pdfkit fallback（纯 Node.js，无需浏览器）
+// ============================================================
+
+async function generatePDFWithPDFKit(reportData: any): Promise<Buffer | null> {
+  const PDFDocument = (await import('pdfkit')).default;
+  const markdown = generateMarkdownReport(reportData);
+
+  return new Promise((resolve, reject) => {
+    try {
+      const doc = new PDFDocument({
+        size: 'A4',
+        margins: { top: 50, bottom: 50, left: 50, right: 50 },
+        info: {
+          Title: `测试报告 - ${reportData.agentName || '智能体'}`,
+          Author: 'Agent Tester',
+        },
+      });
+
+      const chunks: Buffer[] = [];
+      doc.on('data', (chunk: Buffer) => chunks.push(chunk));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
+
+      // 注册中文字体（使用系统字体）
+      const fontPath = getChineseFontPath();
+      if (fontPath) {
+        doc.registerFont('Chinese', fontPath);
+        doc.font('Chinese');
+      }
+
+      // 解析 Markdown 并渲染到 PDF
+      renderMarkdownToPDF(doc, markdown, reportData);
+
+      doc.end();
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+/**
+ * 获取系统中文字体路径
+ * 优先选择 .ttf 格式（pdfkit 原生支持），避免 .ttc（需要额外处理）
+ */
+function getChineseFontPath(): string | null {
+  const fs = require('fs');
+  const candidates = [
+    // macOS - .ttf 优先
+    '/Library/Fonts/Arial Unicode.ttf',
+    '/System/Library/Fonts/Supplemental/Arial Unicode.ttf',
+    // Linux
+    '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc',
+    '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+    '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    // Windows
+    'C:\\Windows\\Fonts\\msyh.ttc',
+    'C:\\Windows\\Fonts\\simhei.ttf',
+  ];
+
+  for (const path of candidates) {
+    if (fs.existsSync(path)) return path;
+  }
+  return null;
+}
+
+/**
+ * 将 Markdown 内容渲染到 PDFKit 文档
+ */
+function renderMarkdownToPDF(doc: any, markdown: string, reportData: any): void {
+  const lines = markdown.split('\n');
+  const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+
+  for (const line of lines) {
+    // 检查是否需要换页
+    if (doc.y > doc.page.height - doc.page.margins.bottom - 40) {
+      doc.addPage();
+    }
+
+    // H1 标题
+    if (line.startsWith('# ')) {
+      doc.moveDown(0.5);
+      doc.fontSize(18).fillColor('#1a1a1a')
+        .text(line.slice(2), { align: 'left' });
+      // 下划线
+      doc.moveDown(0.2);
+      doc.moveTo(doc.x, doc.y)
+        .lineTo(doc.x + pageWidth, doc.y)
+        .strokeColor('#e5e7eb').lineWidth(1).stroke();
+      doc.moveDown(0.5);
+      continue;
+    }
+
+    // H2 标题
+    if (line.startsWith('## ')) {
+      doc.moveDown(0.8);
+      doc.fontSize(14).fillColor('#374151')
+        .text(line.slice(3), { align: 'left' });
+      doc.moveDown(0.3);
+      continue;
+    }
+
+    // H3 标题
+    if (line.startsWith('### ')) {
+      doc.moveDown(0.5);
+      doc.fontSize(12).fillColor('#4b5563')
+        .text(line.slice(4), { align: 'left' });
+      doc.moveDown(0.2);
+      continue;
+    }
+
+    // H4 标题
+    if (line.startsWith('#### ')) {
+      doc.moveDown(0.3);
+      doc.fontSize(11).fillColor('#6b7280')
+        .text(line.slice(5), { align: 'left' });
+      doc.moveDown(0.2);
+      continue;
+    }
+
+    // 表格行（简化处理：转为文本）
+    if (line.startsWith('|')) {
+      // 跳过分隔行
+      if (line.match(/^\|[-|: ]+\|$/)) continue;
+      const cells = line.split('|').filter(s => s.trim()).map(s => s.trim());
+      const text = cells.join('  |  ');
+      doc.fontSize(9).fillColor('#333')
+        .text(text, { align: 'left' });
+      continue;
+    }
+
+    // 列表项
+    if (line.startsWith('- ')) {
+      const content = line.slice(2)
+        .replace(/\*\*(.+?)\*\*/g, '$1')  // 去掉 bold markdown
+        .replace(/✅/g, '[PASS]')
+        .replace(/❌/g, '[FAIL]');
+      doc.fontSize(10).fillColor('#333')
+        .text(`  •  ${content}`, { align: 'left', indent: 10 });
+      continue;
+    }
+
+    // 缩进列表项（子项）
+    if (line.startsWith('  - ')) {
+      const content = line.slice(4).replace(/\*\*(.+?)\*\*/g, '$1');
+      doc.fontSize(9).fillColor('#666')
+        .text(`      ◦  ${content}`, { align: 'left', indent: 20 });
+      continue;
+    }
+
+    // 空行
+    if (line.trim() === '') {
+      doc.moveDown(0.3);
+      continue;
+    }
+
+    // 普通文本
+    const text = line
+      .replace(/\*\*(.+?)\*\*/g, '$1')
+      .replace(/✅/g, '[PASS]')
+      .replace(/❌/g, '[FAIL]')
+      .replace(/⏳/g, '[WAIT]');
+    doc.fontSize(10).fillColor('#333')
+      .text(text, { align: 'left' });
+  }
+
+  // 页脚
+  doc.moveDown(2);
+  doc.fontSize(8).fillColor('#9ca3af')
+    .text(`Generated by Agent Tester | ${new Date().toISOString().slice(0, 10)}`, { align: 'center' });
+}
+
+// ============================================================
+// Puppeteer HTML 模板（保留原有逻辑）
+// ============================================================
 
 /**
  * 将 Markdown + 数据转为带样式的 HTML（含雷达图 SVG）
@@ -70,7 +274,7 @@ function markdownToHTML(markdown: string, reportData: any): string {
 <head>
   <meta charset="UTF-8">
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px; }
     h1 { color: #1a1a1a; border-bottom: 2px solid #e5e7eb; padding-bottom: 8px; }
     h2 { color: #374151; margin-top: 32px; }
     h3 { color: #4b5563; }
