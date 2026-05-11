@@ -26,7 +26,7 @@ async function callLLMForOutline(
 
   const apiKey = process.env.LLM_API_KEY || '';
   const baseUrl = process.env.LLM_BASE_URL || 'https://api.deepseek.com';
-  const model = process.env.LLM_MODEL || 'deepseek-chat';
+  const model = process.env.LLM_GENERATION_MODEL || process.env.LLM_MODEL || 'claude-sonnet-4-6';
 
   const response = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: 'POST',
@@ -351,7 +351,7 @@ async function generateCasesForPoint(
 
   const apiKey = process.env.LLM_API_KEY || '';
   const baseUrl = process.env.LLM_BASE_URL || 'https://api.deepseek.com';
-  const model = process.env.LLM_MODEL || 'deepseek-chat';
+  const model = process.env.LLM_GENERATION_MODEL || process.env.LLM_MODEL || 'claude-sonnet-4-6';
 
   const response = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: 'POST',

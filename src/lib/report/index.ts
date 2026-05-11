@@ -1,5 +1,5 @@
 import { callLLMForJSON } from '../llm';
-import type { TestCase, Verdict, TaskConfig, ImprovementReport, Severity } from '../types';
+import type { TestCase, Verdict, TaskConfig, ImprovementReport, Severity, TestOutline } from '../types';
 import { getIndustryName } from '../generator/industry-rules';
 import { createTaskLogger } from '../logger';
 
@@ -134,21 +134,86 @@ export function generateMarkdownReport(data: ReportData): string {
   md += `| 幻觉检测 | ${verdicts.filter(v => v.hallucinationCheck?.detected).length} | 检测到可能的事实编造 |\n`;
   md += `| 判分异常 | ${disputedVerdicts.length} | 双判不一致 |\n\n`;
 
-  // 详细结果
+  // 详细结果（优先按大纲结构，降级按维度分组）
   md += `## 详细结果\n\n`;
-  for (const [dim, info] of Object.entries(byDimension)) {
-    md += `### ${getDimensionName(dim)}（${info.passed}/${info.total} 通过）\n\n`;
-    const dimCases = cases.filter(c => c.dimension === dim);
-    for (const tc of dimCases) {
-      const verdict = verdicts.find(v => v.caseId === tc.id);
-      const status = verdict ? (verdict.pass ? '✅' : '❌') : '⏳';
-      const lastUserMsg = tc.turns.filter(t => t.role === 'user').pop()?.content || '';
-      md += `- ${status} **${tc.subType}**：${lastUserMsg.slice(0, 60)}${lastUserMsg.length > 60 ? '...' : ''}\n`;
-      if (verdict && !verdict.pass) {
-        md += `  - 理由：${verdict.reason.slice(0, 100)}\n`;
+
+  const hasOutlineData = cases.some(c => c.goalId);
+
+  if (hasOutlineData) {
+    // 按大纲结构：Goal → Scenario → Point → Cases
+    const goalIds = [...new Set(cases.filter(c => c.goalId).map(c => c.goalId!))];
+    for (const goalId of goalIds) {
+      const goalCases = cases.filter(c => c.goalId === goalId);
+      const goalVerdicts = verdicts.filter(v => goalCases.some(c => c.id === v.caseId));
+      const goalPassed = goalVerdicts.filter(v => v.pass).length;
+      const firstCase = goalCases[0];
+
+      md += `### ${goalId} (${goalPassed}/${goalCases.length} 通过)\n\n`;
+
+      // 按 scenarioId 分组
+      const scenarioIds = [...new Set(goalCases.filter(c => c.scenarioId).map(c => c.scenarioId!))];
+      for (const scenarioId of scenarioIds) {
+        const scenarioCases = goalCases.filter(c => c.scenarioId === scenarioId);
+        const scenarioVerdicts = verdicts.filter(v => scenarioCases.some(c => c.id === v.caseId));
+        const scenarioPassed = scenarioVerdicts.filter(v => v.pass).length;
+
+        md += `#### ${scenarioId} (${scenarioPassed}/${scenarioCases.length} 通过)\n\n`;
+
+        for (const tc of scenarioCases) {
+          const verdict = verdicts.find(v => v.caseId === tc.id);
+          const status = verdict ? (verdict.pass ? '✅' : '❌') : '⏳';
+          const lastUserMsg = tc.turns.filter(t => t.role === 'user').pop()?.content || '';
+          md += `- ${status} **${tc.subType}**：${lastUserMsg.slice(0, 60)}${lastUserMsg.length > 60 ? '...' : ''}`;
+          if (verdict) md += ` (${verdict.score}分)`;
+          md += '\n';
+          if (verdict && !verdict.pass) {
+            md += `  - 理由：${verdict.reason.slice(0, 100)}\n`;
+          }
+        }
+        md += '\n';
+      }
+
+      // 无 scenarioId 的用例
+      const noScenarioCases = goalCases.filter(c => !c.scenarioId);
+      if (noScenarioCases.length > 0) {
+        for (const tc of noScenarioCases) {
+          const verdict = verdicts.find(v => v.caseId === tc.id);
+          const status = verdict ? (verdict.pass ? '✅' : '❌') : '⏳';
+          const lastUserMsg = tc.turns.filter(t => t.role === 'user').pop()?.content || '';
+          md += `- ${status} **${tc.subType}**：${lastUserMsg.slice(0, 60)}${lastUserMsg.length > 60 ? '...' : ''}\n`;
+        }
+        md += '\n';
       }
     }
-    md += '\n';
+
+    // 无 goalId 的用例（如打招呼用例）
+    const noGoalCases = cases.filter(c => !c.goalId);
+    if (noGoalCases.length > 0) {
+      md += `### 其他用例\n\n`;
+      for (const tc of noGoalCases) {
+        const verdict = verdicts.find(v => v.caseId === tc.id);
+        const status = verdict ? (verdict.pass ? '✅' : '❌') : '⏳';
+        const lastUserMsg = tc.turns.filter(t => t.role === 'user').pop()?.content || '';
+        md += `- ${status} **${tc.subType}**：${lastUserMsg.slice(0, 60)}${lastUserMsg.length > 60 ? '...' : ''}\n`;
+      }
+      md += '\n';
+    }
+  } else {
+    // 降级：按维度分组（兼容旧数据）
+    for (const [dim, info] of Object.entries(byDimension)) {
+      md += `### ${getDimensionName(dim)}（${info.passed}/${info.total} 通过）\n\n`;
+      const dimCases = cases.filter(c => c.dimension === dim);
+      for (const tc of dimCases) {
+        const verdict = verdicts.find(v => v.caseId === tc.id);
+        const status = verdict ? (verdict.pass ? '✅' : '❌') : '⏳';
+        const lastUserMsg = tc.turns.filter(t => t.role === 'user').pop()?.content || '';
+        md += `- ${status} **${tc.subType}**：${lastUserMsg.slice(0, 60)}${lastUserMsg.length > 60 ? '...' : ''}\n`;
+        if (verdict && !verdict.pass) {
+          md += `  - 理由：${verdict.reason.slice(0, 100)}\n`;
+        }
+      }
+      md += '\n';
+    }
   }
 
   return md;

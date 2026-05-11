@@ -33,6 +33,7 @@ export default function NewTaskPage() {
     timeoutSec: 30,
     retryCount: 2,
     testContext: '',
+    systemPrompt: '',
   });
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -221,6 +222,23 @@ export default function NewTaskPage() {
                 value={form.testContext}
                 onChange={(e) => setForm({ ...form, testContext: e.target.value })}
                 rows={6}
+                className="resize-y font-mono text-xs"
+              />
+            </div>
+
+            {/* Step 7: System Prompt（可选） */}
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">
+                Step 7 · 智能体 System Prompt（可选）
+              </Label>
+              <p className="text-xs text-gray-500">
+                系统会自动尝试获取智能体的角色描述。如果您有完整的 system prompt，可以粘贴在此处以提高测试大纲的准确性。
+              </p>
+              <Textarea
+                placeholder="例如：你是一个专业的 K12 微戏剧创作智能体，通过苏格拉底式提问引导学员..."
+                value={form.systemPrompt}
+                onChange={(e) => setForm({ ...form, systemPrompt: e.target.value })}
+                rows={4}
                 className="resize-y font-mono text-xs"
               />
             </div>
