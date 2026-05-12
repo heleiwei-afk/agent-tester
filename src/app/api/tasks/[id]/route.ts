@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db, schema } from '@/lib/db';
 import { eq, sql } from 'drizzle-orm';
+import { v4 as uuid } from 'uuid';
 import { executionQueue, generationQueue, evaluationQueue, addGenerationJob } from '@/lib/queue';
 
 /**
@@ -156,7 +157,34 @@ export async function PATCH(
     if (newConfig.apiKey) newConfig.apiKey = newConfig.apiKey.trim();
     if (newConfig.botId) newConfig.botId = newConfig.botId.trim();
 
-    // 清除旧的关联数据（大纲、用例、结果、判分、生成进度）
+    // done/running/completing 状态：保留原任务，创建新任务
+    const preserveStatuses = ['done', 'running', 'completing'];
+    if (preserveStatuses.includes(task.status)) {
+      const newTaskId = uuid();
+      const now = Date.now();
+
+      await db.insert(schema.tasks).values({
+        id: newTaskId,
+        agentName: newConfig.agentName || null,
+        botId: newConfig.botId,
+        platform: newConfig.platform,
+        configJson: JSON.stringify(newConfig),
+        status: 'analyzing',
+        totalCases: newConfig.caseCount,
+        createdAt: now,
+      });
+
+      // 入队生成大纲
+      await addGenerationJob(newTaskId, newConfig);
+
+      return NextResponse.json({
+        message: '已基于此任务创建新任务，正在分析...',
+        status: 'analyzing',
+        newTaskId,
+      });
+    }
+
+    // 其他状态：清除旧数据，重置为 analyzing
     await db.delete(schema.verdicts).where(eq(schema.verdicts.taskId, id));
     await db.delete(schema.results).where(eq(schema.results.taskId, id));
     await db.delete(schema.cases).where(eq(schema.cases.taskId, id));

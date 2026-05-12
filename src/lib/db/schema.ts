@@ -125,3 +125,17 @@ export const testOutlines = sqliteTable('test_outlines', {
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
 });
+
+// 导出任务表
+export const exportJobs = sqliteTable('export_jobs', {
+  id: text('id').primaryKey(),
+  taskIds: text('task_ids').notNull(),       // JSON array of task IDs
+  status: text('status').notNull().default('pending'), // pending | processing | done | failed
+  format: text('format').notNull().default('pdf'),
+  filePath: text('file_path'),              // 生成完成后的临时文件路径
+  fileName: text('file_name'),              // 下载时的文件名
+  fileSize: integer('file_size'),           // 文件大小（bytes）
+  errorMessage: text('error_message'),
+  createdAt: integer('created_at').notNull(),
+  finishedAt: integer('finished_at'),
+});

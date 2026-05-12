@@ -79,6 +79,7 @@ function TaskListPage() {
   const [loading, setLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [exporting, setExporting] = useState(false);
+  const [exportJobId, setExportJobId] = useState<string | null>(null);
   const [page, setPage] = useState(initialPage);
   const [pagination, setPagination] = useState<Pagination | null>(null);
 
@@ -143,31 +144,67 @@ function TaskListPage() {
     else setSelectedIds(new Set(tasks.map(t => t.id)));
   }
 
-  // === 批量导出 ===
+  // === 批量导出（异步 PDF） ===
   async function handleBatchExport() {
     if (selectedIds.size === 0) return;
     setExporting(true);
     try {
-      const res = await fetch('/api/tasks/batch-export', {
+      const res = await fetch('/api/export', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ taskIds: Array.from(selectedIds) }),
       });
       if (res.ok) {
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `批量导出_${new Date().toISOString().slice(0, 10)}.zip`;
-        a.click();
-        URL.revokeObjectURL(url);
+        const data = await res.json();
+        setExportJobId(data.jobId);
       }
     } catch (err) {
-      console.error('批量导出失败', err);
-    } finally {
+      console.error('创建导出任务失败', err);
       setExporting(false);
     }
   }
+
+  // === 轮询导出状态 ===
+  useEffect(() => {
+    if (!exportJobId) return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/export/${exportJobId}`);
+        const contentType = res.headers.get('content-type') || '';
+
+        if (contentType.includes('application/pdf') || contentType.includes('application/zip')) {
+          // 文件就绪，下载
+          const blob = await res.blob();
+          const disposition = res.headers.get('content-disposition') || '';
+          const fileNameMatch = disposition.match(/filename="?([^"]+)"?/);
+          const fileName = fileNameMatch ? decodeURIComponent(fileNameMatch[1]) : 'export.pdf';
+
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = fileName;
+          a.click();
+          URL.revokeObjectURL(url);
+
+          setExportJobId(null);
+          setExporting(false);
+          clearInterval(interval);
+        } else {
+          const data = await res.json();
+          if (data.status === 'failed') {
+            alert('导出失败: ' + (data.error || '未知错误'));
+            setExportJobId(null);
+            setExporting(false);
+            clearInterval(interval);
+          }
+          // pending/processing 继续轮询
+        }
+      } catch {
+        // 网络错误，继续轮询
+      }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [exportJobId]);
 
   // === 确认大纲 ===
   async function approveOutline(taskId: string) {
@@ -228,8 +265,12 @@ function TaskListPage() {
         body: JSON.stringify(editForm),
       });
       if (res.ok) {
+        const data = await res.json();
         setEditingTask(null);
         setEditForm(null);
+        if (data.newTaskId) {
+          alert('已基于此任务创建新任务，正在重新分析...');
+        }
         fetchTasks();
       } else {
         const data = await res.json();
@@ -261,7 +302,7 @@ function TaskListPage() {
                   onClick={handleBatchExport}
                   disabled={exporting}
                 >
-                  {exporting ? '导出中...' : '批量导出'}
+                  {exporting ? '生成PDF中...' : '批量导出PDF'}
                 </button>
                 {hasOutlineReview && (
                   <button

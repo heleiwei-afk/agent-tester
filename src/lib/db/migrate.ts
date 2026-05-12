@@ -161,4 +161,20 @@ export function initDatabase() {
   } catch (e: any) {
     if (!e.message?.includes('duplicate column')) throw e;
   }
+
+  // 增量迁移：新增 export_jobs 表
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS export_jobs (
+      id TEXT PRIMARY KEY,
+      task_ids TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      format TEXT NOT NULL DEFAULT 'pdf',
+      file_path TEXT,
+      file_name TEXT,
+      file_size INTEGER,
+      error_message TEXT,
+      created_at INTEGER NOT NULL,
+      finished_at INTEGER
+    );
+  `);
 }
