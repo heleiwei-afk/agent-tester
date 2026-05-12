@@ -206,7 +206,7 @@ export default function AgentsPage() {
                         <button
                           className="text-xs text-purple-600 hover:underline"
                           onClick={() => {
-                            window.open(`/api/tasks/${agent.id}/report?format=md`, '_blank');
+                            window.open(`/api/tasks/${agent.id}/report?format=pdf`, '_blank');
                           }}
                         >
                           导出

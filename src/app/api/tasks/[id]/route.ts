@@ -144,14 +144,7 @@ export async function PATCH(
       return NextResponse.json({ code: 'NOT_FOUND', message: '任务不存在' }, { status: 404 });
     }
 
-    // 只允许在非执行中状态编辑
-    const editableStatuses = ['pending', 'analyzing', 'outline_review', 'generating', 'reviewing', 'failed'];
-    if (!editableStatuses.includes(task.status)) {
-      return NextResponse.json({
-        code: 'INVALID_STATE',
-        message: `当前状态为 ${task.status}，不允许编辑。只有未执行或已失败的任务可以编辑。`,
-      }, { status: 400 });
-    }
+    // 所有状态都允许编辑（编辑后重置为 analyzing，重新生成大纲）
 
     const body = await request.json();
 

@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db, schema } from '@/lib/db';
-import { eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { generateMarkdownReport } from '@/lib/report';
+import { generatePDFReport } from '@/lib/report/pdf';
 import JSZip from 'jszip';
 
 /**
  * POST /api/tasks/batch-export — 批量导出测试报告和改进报告
  * Body: { taskIds: string[] }
- * Response: ZIP 文件
+ * Response: ZIP 文件（测试报告默认 PDF，失败降级 MD）
  */
 export async function POST(request: NextRequest) {
   try {
@@ -27,51 +28,66 @@ export async function POST(request: NextRequest) {
       if (!task) continue;
 
       const agentName = task.agentName || `任务-${taskId.slice(0, 8)}`;
-      // 清理文件名中的非法字符
       const safeName = agentName.replace(/[\/\\:*?"<>|]/g, '_').slice(0, 50);
 
-      // 测试报告
-      if (task.reportContent) {
-        zip.file(`${safeName}_测试报告.md`, task.reportContent);
-      } else {
-        // 降级：用旧逻辑生成
-        const cases = await db.select().from(schema.cases).where(eq(schema.cases.taskId, taskId));
-        const verdicts = await db.select().from(schema.verdicts).where(eq(schema.verdicts.taskId, taskId));
-        const results = await db.select().from(schema.results).where(eq(schema.results.taskId, taskId));
+      // 构建 reportData
+      const cases = await db.select().from(schema.cases).where(eq(schema.cases.taskId, taskId));
+      const verdicts = await db.select().from(schema.verdicts).where(eq(schema.verdicts.taskId, taskId));
+      const results = await db.select().from(schema.results).where(eq(schema.results.taskId, taskId));
 
-        const responses = new Map<string, string>();
-        for (const r of results) {
-          if (r.responseContent) responses.set(r.caseId, r.responseContent);
+      const responses = new Map<string, string>();
+      for (const r of results) {
+        if (r.responseContent) responses.set(r.caseId, r.responseContent);
+      }
+
+      const config = JSON.parse(task.configJson);
+      const reportData = {
+        taskId,
+        config,
+        agentName,
+        cases: cases.map(c => ({
+          id: c.id, taskId: c.taskId, dimension: c.dimension as any,
+          subType: c.subType, turns: JSON.parse(c.turnsJson),
+          expectation: c.expectation, passCriteria: JSON.parse(c.passCriteriaJson),
+          weight: c.weight, evaluationStrategy: c.evaluationStrategy as any,
+          status: c.status as any, newSession: c.newSession === 1, orderIndex: c.orderIndex,
+        })),
+        verdicts: verdicts.map(v => ({
+          caseId: v.caseId, pass: v.pass === 1, score: v.score,
+          reason: v.reason, confidence: v.confidence,
+          severity: v.severity as any, suggestion: v.suggestion || undefined,
+          evidence: v.evidence || '', strategyUsed: v.strategyUsed as any,
+          dualJudge: v.dualJudgeJson ? JSON.parse(v.dualJudgeJson) : { judge1: {}, judge2: {}, consensus: true },
+          hallucinationCheck: v.hallucinationJson ? JSON.parse(v.hallucinationJson) : { detected: false },
+          needsHumanReview: v.needsHumanReview === 1,
+        })),
+        responses,
+        startedAt: task.startedAt || task.createdAt,
+        finishedAt: task.finishedAt || Date.now(),
+      };
+
+      // 尝试生成 PDF，失败降级为 MD
+      let pdfGenerated = false;
+      if (cases.length > 0 && verdicts.length > 0) {
+        try {
+          const pdfBuffer = await generatePDFReport(reportData);
+          if (pdfBuffer) {
+            zip.file(`${safeName}_测试报告.pdf`, pdfBuffer);
+            pdfGenerated = true;
+          }
+        } catch {
+          // PDF 生成失败，降级为 MD
         }
+      }
 
-        const config = JSON.parse(task.configJson);
-        const reportData = {
-          taskId,
-          config,
-          agentName,
-          cases: cases.map(c => ({
-            id: c.id, taskId: c.taskId, dimension: c.dimension as any,
-            subType: c.subType, turns: JSON.parse(c.turnsJson),
-            expectation: c.expectation, passCriteria: JSON.parse(c.passCriteriaJson),
-            weight: c.weight, evaluationStrategy: c.evaluationStrategy as any,
-            status: c.status as any, newSession: c.newSession === 1, orderIndex: c.orderIndex,
-          })),
-          verdicts: verdicts.map(v => ({
-            caseId: v.caseId, pass: v.pass === 1, score: v.score,
-            reason: v.reason, confidence: v.confidence,
-            severity: v.severity as any, suggestion: v.suggestion || undefined,
-            evidence: v.evidence || '', strategyUsed: v.strategyUsed as any,
-            dualJudge: v.dualJudgeJson ? JSON.parse(v.dualJudgeJson) : { judge1: {}, judge2: {}, consensus: true },
-            hallucinationCheck: v.hallucinationJson ? JSON.parse(v.hallucinationJson) : { detected: false },
-            needsHumanReview: v.needsHumanReview === 1,
-          })),
-          responses,
-          startedAt: task.startedAt || task.createdAt,
-          finishedAt: task.finishedAt || Date.now(),
-        };
-
-        const markdown = generateMarkdownReport(reportData);
-        zip.file(`${safeName}_测试报告.md`, markdown);
+      if (!pdfGenerated) {
+        // 降级为 MD
+        if (task.reportContent) {
+          zip.file(`${safeName}_测试报告.md`, task.reportContent);
+        } else if (cases.length > 0) {
+          const markdown = generateMarkdownReport(reportData);
+          zip.file(`${safeName}_测试报告.md`, markdown);
+        }
       }
 
       // 改进报告
@@ -105,7 +121,6 @@ export async function POST(request: NextRequest) {
 
         zip.file(`${safeName}_改进报告.md`, improvementMd);
       } else if (task.reportContent && task.reportContent.includes('## 整体改进建议')) {
-        // 改进建议已嵌入在 reportContent 中，提取出来
         const improvementStart = task.reportContent.indexOf('## 整体改进建议');
         const improvementEnd = task.reportContent.indexOf('\n---\n', improvementStart);
         if (improvementStart !== -1) {

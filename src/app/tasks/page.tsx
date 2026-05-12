@@ -368,9 +368,7 @@ function TaskListPage() {
                         {(task.status === 'done' || task.status === 'running') && (
                           <Link href={`/tasks/${task.id}/cases`} className="text-xs text-blue-600 hover:underline">用例</Link>
                         )}
-                        {['pending', 'analyzing', 'outline_review', 'generating', 'reviewing', 'failed'].includes(task.status) && (
-                          <button className="text-xs text-purple-600 hover:underline" onClick={() => openEditDialog(task)}>编辑</button>
-                        )}
+                        <button className="text-xs text-purple-600 hover:underline" onClick={() => openEditDialog(task)}>编辑</button>
                         <button
                           className="text-xs text-red-600 hover:underline"
                           onClick={async () => {
