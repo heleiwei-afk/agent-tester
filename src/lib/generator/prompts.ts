@@ -339,7 +339,10 @@ export const OUTLINE_STEP1_PROMPT = `你是一位资深的智能体测试架构�
 - 测试目标要聚焦"用户价值"，而非技术指标
 - 优先级基于"影响用户体验的严重程度"
 - 确保 3-5 个测试目标，覆盖核心功能、边界情况和合规性
-- 此步骤只输出目标概要，不需要输出 scenarios 和 testPoints`;
+- 此步骤只输出目标概要，不需要输出 scenarios 和 testPoints
+- keyCapabilities 最多 5 项，每项不超过 20 字
+- riskAreas 最多 4 项，每项不超过 20 字
+- testGoals 最多 5 个，rationale 不超过 50 字`;
 
 /**
  * 测试大纲生成 Prompt - 第二步：为单个测试目标生成场景和测试点

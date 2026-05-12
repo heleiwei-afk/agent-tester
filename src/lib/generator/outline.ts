@@ -40,7 +40,7 @@ async function callLLMForOutline(
     systemPrompt: '你是专业的智能体测试架构师。严格按照要求的 JSON 格式输出。',
     userPrompt: step1Prompt,
     temperature: 0.7,
-    maxTokens: 4096,
+    maxTokens: 8192,
     model,
   });
 

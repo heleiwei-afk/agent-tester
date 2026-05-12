@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db, schema } from '@/lib/db';
 import { eq, sql } from 'drizzle-orm';
-import { executionQueue, generationQueue, evaluationQueue } from '@/lib/queue';
+import { executionQueue, generationQueue, evaluationQueue, addGenerationJob } from '@/lib/queue';
 
 /**
  * GET /api/tasks/[id] — 任务详情
@@ -120,6 +120,99 @@ export async function DELETE(
     return NextResponse.json({
       code: 'INTERNAL_ERROR',
       message: '删除任务失败',
+      details: error.message,
+    }, { status: 500 });
+  }
+}
+
+/**
+ * PATCH /api/tasks/[id] — 编辑任务配置
+ * 编辑后重置状态为 analyzing，清除旧大纲/用例，重新生成
+ */
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+
+  try {
+    const task = await db.query.tasks.findFirst({
+      where: eq(schema.tasks.id, id),
+    });
+
+    if (!task) {
+      return NextResponse.json({ code: 'NOT_FOUND', message: '任务不存在' }, { status: 404 });
+    }
+
+    // 只允许在非执行中状态编辑
+    const editableStatuses = ['pending', 'analyzing', 'outline_review', 'generating', 'reviewing', 'failed'];
+    if (!editableStatuses.includes(task.status)) {
+      return NextResponse.json({
+        code: 'INVALID_STATE',
+        message: `当前状态为 ${task.status}，不允许编辑。只有未执行或已失败的任务可以编辑。`,
+      }, { status: 400 });
+    }
+
+    const body = await request.json();
+
+    // 构建新的 config
+    const oldConfig = JSON.parse(task.configJson);
+    const newConfig = { ...oldConfig, ...body };
+
+    // trim 字符串字段
+    if (newConfig.apiKey) newConfig.apiKey = newConfig.apiKey.trim();
+    if (newConfig.botId) newConfig.botId = newConfig.botId.trim();
+
+    // 清除旧的关联数据（大纲、用例、结果、判分、生成进度）
+    await db.delete(schema.verdicts).where(eq(schema.verdicts.taskId, id));
+    await db.delete(schema.results).where(eq(schema.results.taskId, id));
+    await db.delete(schema.cases).where(eq(schema.cases.taskId, id));
+    await db.delete(schema.generationProgress).where(eq(schema.generationProgress.taskId, id));
+    await db.delete(schema.testOutlines).where(eq(schema.testOutlines.taskId, id));
+
+    // 从队列中移除该任务的 Job
+    const queues = [executionQueue, generationQueue, evaluationQueue];
+    for (const queue of queues) {
+      try {
+        const jobs = await queue.getJobs(['waiting', 'delayed', 'prioritized', 'paused']);
+        for (const job of jobs) {
+          if (job.data?.taskId === id) {
+            await job.remove().catch(() => {});
+          }
+        }
+      } catch {}
+    }
+
+    // 更新任务
+    await db.update(schema.tasks).set({
+      agentName: newConfig.agentName || null,
+      botId: newConfig.botId,
+      platform: newConfig.platform,
+      configJson: JSON.stringify(newConfig),
+      status: 'analyzing',
+      totalCases: newConfig.caseCount,
+      overallScore: null,
+      passedCases: null,
+      failedCases: null,
+      reportContent: null,
+      improvementReport: null,
+      errorMessage: null,
+      startedAt: null,
+      finishedAt: null,
+    }).where(eq(schema.tasks.id, id));
+
+    // 重新入队生成大纲
+    await addGenerationJob(id, newConfig);
+
+    return NextResponse.json({
+      message: '任务已更新，正在重新分析...',
+      status: 'analyzing',
+    });
+
+  } catch (error: any) {
+    return NextResponse.json({
+      code: 'INTERNAL_ERROR',
+      message: '编辑任务失败',
       details: error.message,
     }, { status: 500 });
   }
